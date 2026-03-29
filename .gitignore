@@ -6,3 +6,4 @@ build/
 .venv/
 .env
 auth_state.json
+DEADJOE
