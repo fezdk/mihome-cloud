@@ -1,8 +1,10 @@
 # mihome-cloud
 
-Minimal Xiaomi MiHome cloud client for controlling MIoT smart home devices via the Xiaomi cloud API.
+Control Xiaomi MIoT smart home devices via the Xiaomi cloud API.
 
-Works with any MIoT-compatible device — vacuums, air purifiers, lights, sensors, etc. No local network access needed.
+Provides both a **high-level device API** (profile-driven, no magic numbers)
+and **low-level raw access** for any MIoT device — vacuums, air purifiers,
+lights, sensors, etc.
 
 ## Installation
 
@@ -12,164 +14,74 @@ pip install mihome-cloud
 
 Dependencies: `requests` + `pycryptodome` (installed automatically).
 
+## Quick Start
+
+```python
+import json
+from mihome_cloud import MiHomeCloud, MiHomeVacuum
+from mihome_cloud.auth import interactive_login
+
+# First time: authenticate (handles CAPTCHA + 2FA)
+state = interactive_login("user@example.com", "password", country="de",
+                          save_to="auth_state.json")
+
+# Create cloud client
+cloud = MiHomeCloud("user@example.com", "password", country="de")
+cloud.restore_auth_state(json.load(open("auth_state.json")))
+
+# Find your vacuum
+devices = cloud.get_devices()
+for d in devices:
+    print(f"{d['did']}: {d['name']} ({d['model']})")
+
+# Create a high-level vacuum object (auto-loads device profile)
+vacuum = MiHomeVacuum.from_cloud(cloud, did="1173085625")
+
+# Use it
+print(vacuum.status())           # "charging"
+print(vacuum.battery_level())    # 100
+print(vacuum.rooms())            # {"Kitchen": 4, "Living room": 3, ...}
+vacuum.clean_rooms(["kitchen"])
+```
+
 ## Authentication
 
-Xiaomi requires SSO authentication, which may involve CAPTCHA and/or 2FA (email code). The library handles both.
+Xiaomi requires SSO authentication, which may involve CAPTCHA and/or 2FA.
 
-### First-Time Setup (Interactive)
-
-The easiest way to authenticate is using the interactive helper:
+### First-Time Setup
 
 ```python
 from mihome_cloud.auth import interactive_login
 
-# This will prompt for CAPTCHA/2FA if needed
 state = interactive_login(
     username="your-email@example.com",
     password="your-password",
-    country="de",           # Server region (see table below)
-    save_to="auth_state.json",  # Saves tokens for reuse
+    country="de",
+    save_to="auth_state.json",
 )
 ```
 
 The helper handles:
 - **CAPTCHA** — shows URL to view the image + saves it locally
 - **2FA** — sends email code, prompts you to enter it
-- **Token extraction** — captures `serviceToken` and `ssecurity` from the full redirect chain
+- **Token extraction** — captures tokens from the full redirect chain
 
-**Important notes:**
-- Xiaomi rate-limits 2FA to 3-5 requests per day. Don't retry excessively.
-- Tokens are saved immediately after auth succeeds, before device verification.
-- If device listing fails but auth succeeded, the tokens are still saved and likely valid.
+**Important:** Xiaomi rate-limits 2FA to 3-5 requests per day. Tokens are
+saved immediately after auth — don't worry if device listing fails afterward.
 
-### Subsequent Runs (No Login Needed)
-
-Once you have `auth_state.json`, restore the session without re-authenticating:
+### Subsequent Runs
 
 ```python
 import json
 from mihome_cloud import MiHomeCloud
-
-with open("auth_state.json") as f:
-    state = json.load(f)
-
-cloud = MiHomeCloud("your-email@example.com", "your-password", country="de")
-cloud.restore_auth_state(state)
-# No login() needed — token is reused and auto-refreshes on expiry
-
-devices = cloud.get_devices()
-for d in devices:
-    print(f"{d['did']}: {d['name']} ({d['model']})")
-```
-
-If the token expires, the next RPC call automatically triggers re-authentication (which may hit CAPTCHA/2FA limits — so persist your tokens).
-
-### Manual Authentication
-
-If you prefer full control:
-
-```python
-from mihome_cloud.auth import XiaomiAuth
-
-auth = XiaomiAuth()
-if auth.login("your-email@example.com", "your-password"):
-    state = auth.get_state()
-    # state = {"user_id": "...", "ssecurity": "...", "service_token": "...", "client_id": "..."}
-
-    # Verify by listing devices
-    devices = auth.get_devices("de")
-    for d in devices:
-        print(f"  {d['name']} ({d['model']})")
-```
-
-## Usage
-
-### Get Device Properties
-
-Properties are identified by (service_id, property_id) pairs from the [MIoT spec](https://home.miot-spec.com).
-
-```python
-from mihome_cloud import MiHomeCloud
-import json
 
 cloud = MiHomeCloud("user@example.com", "password", country="de")
 with open("auth_state.json") as f:
     cloud.restore_auth_state(json.load(f))
-
-# Find your device ID
-devices = cloud.get_devices()
-device_id = devices[0]["did"]
-
-# Get vacuum battery (siid=3, piid=1) and status (siid=2, piid=2)
-props = cloud.get_properties(device_id, [(3, 1), (2, 2)])
-print(f"Battery: {props[(3, 1)]}%")
-print(f"Status: {props[(2, 2)]}")
+# No login() needed — token auto-refreshes on expiry
 ```
 
-### Set a Property
-
-```python
-# Set vacuum suction level (siid=2, piid=9) to 2 (medium)
-cloud.set_property(device_id, siid=2, piid=9, value=2)
-```
-
-### Execute an Action
-
-```python
-# Start vacuum cleaning (siid=2, aiid=1)
-cloud.action(device_id, siid=2, aiid=1)
-
-# Clean specific rooms (siid=2, aiid=16)
-cloud.action(device_id, siid=2, aiid=16, params=[[1, 2, 3]])
-
-# Return vacuum to dock (siid=3, aiid=1)
-cloud.action(device_id, siid=3, aiid=1)
-```
-
-### Fault Code Lookup
-
-```python
-from mihome_cloud import lookup_fault
-
-# Xiaomi-branded vacuums use 6-digit codes
-print(lookup_fault("xiaomi.vacuum.d102gl", 320004))  # "drive_wheel_error"
-
-# Dreame-branded vacuums use codes 0-125
-print(lookup_fault("dreame.vacuum.r2205", 15))  # "left_wheel_motor"
-
-# Unknown codes return "unknown_{code}"
-print(lookup_fault("xiaomi.vacuum.d102gl", 999999))  # "unknown_999999"
-```
-
-### Session Persistence
-
-```python
-import json
-
-# After login — save state
-state = cloud.get_auth_state()
-with open("auth_state.json", "w") as f:
-    json.dump(state, f)
-
-# On next run — restore state (no login needed)
-with open("auth_state.json") as f:
-    state = json.load(f)
-cloud = MiHomeCloud("user@example.com", "password", country="de")
-cloud.restore_auth_state(state)
-```
-
-### Context Manager
-
-```python
-with MiHomeCloud("user@example.com", "password", country="de") as cloud:
-    cloud.login()
-    devices = cloud.get_devices()
-# Session auto-closed
-```
-
-## Server Regions
-
-The `country` parameter must match the region in your Mi Home app:
+### Server Regions
 
 | Region | Code |
 |--------|------|
@@ -179,40 +91,204 @@ The `country` parameter must match the region in your Mi Home app:
 | Singapore | `sg` |
 | India | `in` |
 | Russia | `ru` |
-| Taiwan | `tw` |
 
-## Finding MIoT Service/Property/Action IDs
+## Vacuum Control
 
-Every Xiaomi device has a MIoT spec. Look up yours at [home.miot-spec.com](https://home.miot-spec.com):
+The `MiHomeVacuum` class provides a clean API for robot vacuums. All
+MIoT-specific details are resolved from a device profile — no magic numbers.
 
-1. Search for your device model (e.g. `xiaomi.vacuum.d102gl`)
-2. Browse services (e.g. service 2 = vacuum, service 3 = battery)
-3. Find the property/action IDs you need
+### Setup
 
-Common vacuum IDs:
+```python
+from mihome_cloud import MiHomeCloud, MiHomeVacuum
 
-| Operation | siid | piid/aiid | Type |
-|-----------|------|-----------|------|
-| Battery level | 3 | piid=1 | property |
-| Vacuum status | 2 | piid=2 | property |
-| Start cleaning | 2 | aiid=1 | action |
-| Stop cleaning | 2 | aiid=2 | action |
-| Return to dock | 3 | aiid=1 | action |
-| Clean rooms | 2 | aiid=16 | action |
+cloud = MiHomeCloud(...)
+cloud.restore_auth_state(...)
+
+# Auto-detects model and loads the right profile
+vacuum = MiHomeVacuum.from_cloud(cloud, did="1173085625")
+```
+
+### Status & Sensors
+
+```python
+vacuum.status()           # "charging", "sweeping_mopping", "paused", etc.
+vacuum.status_code()      # Raw numeric code
+vacuum.battery_level()    # 0-100
+vacuum.is_charging()      # True/False
+vacuum.is_busy()          # True if actively cleaning
+vacuum.fault()            # "drive_wheel_error" or None
+vacuum.has_fault()        # True/False
+```
+
+### Cleaning
+
+```python
+vacuum.start()                          # Start sweep + mop
+vacuum.start_sweep()                    # Sweep only (no mop)
+vacuum.start_mop()                      # Mop only
+vacuum.clean_rooms(["kitchen", "bedroom"])  # Clean specific rooms by name
+vacuum.pause()
+vacuum.resume()
+vacuum.stop()
+vacuum.dock()                           # Return to base
+vacuum.locate()                         # Play sound to find it
+```
+
+Room names are resolved from the vacuum's map — use the names you see
+in your Mi Home app. Partial and case-insensitive matching is supported.
+
+### Rooms
+
+```python
+vacuum.rooms()
+# {"Living room": 3, "Kitchen": 4, "Bryggers": 5, "Stue gang": 6, "Eddies": 7}
+```
+
+### Consumables
+
+```python
+vacuum.consumables()
+# {"main_brush_life": 77, "side_brush_life": 66, "filter_life": 54,
+#  "mop_life": 47, "dust_bag_life": 100}
+```
+
+### Station Control
+
+```python
+vacuum.wash_mop()       # Wash mop pads at station
+vacuum.dry_mop()        # Dry mop pads
+vacuum.empty_bin()      # Empty dust bin
+```
+
+### Pre-Command Safety Check
+
+```python
+warning = vacuum.check_before_command()
+if warning:
+    print(warning)
+    # "Vacuum has an interrupted task (59m² done) with active fault:
+    #  drive_wheel_error. Send 'resume' to continue or 'stop' first."
+else:
+    vacuum.clean_rooms(["kitchen"])
+```
+
+### Full State (for polling/dashboards)
+
+```python
+state = vacuum.full_state()
+# Returns a flat dict with all status, consumables, rooms, faults:
+# {"status": "charging", "battery": 100, "charging": True,
+#  "rooms/kitchen": 4, "consumables/filter_life": 54, ...}
+```
+
+### Fault Codes
+
+```python
+from mihome_cloud import lookup_fault
+
+lookup_fault("xiaomi.vacuum.d102gl", 320004)  # "drive_wheel_error"
+lookup_fault("dreame.vacuum.r2205", 15)       # "left_wheel_motor"
+```
+
+## Device Profiles
+
+The library uses JSON profiles to map semantic names to MIoT IDs.
+Profiles are auto-loaded by model string.
+
+### Supported Models
+
+| Model | Device |
+|-------|--------|
+| `xiaomi.vacuum.d102gl` | Xiaomi Robot Vacuum X20 Pro |
+
+### Adding a New Model
+
+Create a JSON file in `src/mihome_cloud/profiles/`:
+
+```json
+{
+  "model": "your.device.model",
+  "device_type": "vacuum",
+  "capabilities": ["battery", "consumables", "rooms", "station", "fault"],
+  "properties": {
+    "status":  {"siid": 2, "piid": 2},
+    "battery": {"siid": 3, "piid": 1},
+    ...
+  },
+  "actions": {
+    "start_sweep_mop": {"siid": 2, "aiid": 6},
+    "stop":            {"siid": 2, "aiid": 2},
+    ...
+  },
+  "status_map": {"1": "idle", "2": "charging", ...},
+  "value_maps": {"fan_speed": {"1": "silent", "2": "basic", ...}},
+  "active_statuses": [4, 7, 12, 14, 16, 17]
+}
+```
+
+Find your device's MIoT IDs at [home.miot-spec.com](https://home.miot-spec.com).
+
+## Low-Level Access
+
+For devices without a profile or device class, use the raw cloud client:
+
+### Get Properties
+
+```python
+# Properties are identified by (service_id, property_id) pairs
+props = cloud.get_properties(device_id, [(3, 1), (2, 2)])
+print(f"Battery: {props[(3, 1)]}%")
+```
+
+### Set a Property
+
+```python
+cloud.set_property(device_id, siid=2, piid=9, value=2)
+```
+
+### Execute an Action
+
+```python
+cloud.action(device_id, siid=2, aiid=1)              # Start cleaning
+cloud.action(device_id, siid=2, aiid=16, params=[[4]])  # Clean room 4
+```
+
+### List Devices
+
+```python
+for d in cloud.get_devices():
+    print(f"{d['did']}: {d['name']} ({d['model']})")
+```
+
+## Architecture
+
+```
+MiHomeCloud          — Raw RPC (siid/piid/aiid)
+  ↓
+MiHomeDevice         — Profile-driven property/action access by name
+  ↓
+Capability Mixins    — Battery, Consumables, Rooms, Station, Fault
+  ↓
+MiHomeVacuum         — High-level vacuum API (start, stop, clean_rooms)
+  ↓
+Device Profile JSON  — Model-specific MIoT mappings (no code changes)
+```
 
 ## Troubleshooting
 
 ### CAPTCHA on every login
-Xiaomi triggers CAPTCHA when it sees a new `client_id`. Persist the auth state (including `client_id`) to avoid this. The `interactive_login` helper does this automatically.
+Persist auth state including `client_id`. The `interactive_login` helper does this automatically.
 
 ### 2FA rate limited
-Xiaomi allows 3-5 2FA attempts per day. If you've exceeded the limit, wait 24 hours. Once you have a valid `auth_state.json`, you won't need 2FA again until the token fully expires.
+3-5 attempts per day. Once you have `auth_state.json`, you won't need 2FA again.
 
 ### "auth error" or "invalid signature"
-The `ssecurity` and `serviceToken` must come from the same auth session. If you manually constructed `auth_state.json`, ensure all fields are from the same login. The `interactive_login` helper handles this correctly.
+Ensure `ssecurity` and `serviceToken` are from the same login session. Use `interactive_login` — it handles the multi-step redirect chain correctly.
 
-### Device not found
-Ensure your `country` matches the region in your Mi Home app. Devices registered in the EU (`de`) won't appear on the US (`us`) server.
+### No profile for my device
+Use the low-level `cloud.get_properties()` / `cloud.action()` API directly.
+To add a profile, find your device's MIoT spec at [home.miot-spec.com](https://home.miot-spec.com).
 
 ## Credits
 
