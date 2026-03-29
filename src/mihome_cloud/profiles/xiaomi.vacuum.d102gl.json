@@ -1,0 +1,80 @@
+{
+  "model": "xiaomi.vacuum.d102gl",
+  "device_type": "vacuum",
+  "capabilities": ["battery", "consumables", "rooms", "mop", "station", "fault"],
+
+  "properties": {
+    "status":          {"siid": 2, "piid": 2},
+    "fault":           {"siid": 2, "piid": 3},
+    "sweep_mop_type":  {"siid": 2, "piid": 4},
+    "cleaning_area":   {"siid": 2, "piid": 6},
+    "cleaning_time":   {"siid": 2, "piid": 7},
+    "fan_speed":       {"siid": 2, "piid": 9},
+    "water_level":     {"siid": 2, "piid": 10},
+    "carpet_boost":    {"siid": 2, "piid": 20},
+    "room_info":       {"siid": 2, "piid": 16},
+    "battery":         {"siid": 3, "piid": 1},
+    "charging":        {"siid": 3, "piid": 2},
+    "main_brush_life": {"siid": 12, "piid": 1},
+    "side_brush_life": {"siid": 13, "piid": 1},
+    "filter_life":     {"siid": 14, "piid": 1},
+    "mop_life":        {"siid": 9, "piid": 1},
+    "dust_bag_life":   {"siid": 19, "piid": 1}
+  },
+
+  "actions": {
+    "start_sweep":       {"siid": 2, "aiid": 1},
+    "stop":              {"siid": 2, "aiid": 2},
+    "go_charge":         {"siid": 2, "aiid": 3},
+    "start_sweep_only":  {"siid": 2, "aiid": 4},
+    "start_mop":         {"siid": 2, "aiid": 5},
+    "start_sweep_mop":   {"siid": 2, "aiid": 6},
+    "pause":             {"siid": 2, "aiid": 7},
+    "resume":            {"siid": 2, "aiid": 8},
+    "clean_rooms":       {"siid": 2, "aiid": 16},
+    "start_dust_arrest": {"siid": 2, "aiid": 18},
+    "start_mop_wash":    {"siid": 2, "aiid": 19},
+    "start_dry":         {"siid": 2, "aiid": 20},
+    "dock":              {"siid": 3, "aiid": 1},
+    "locate":            {"siid": 6, "aiid": 1}
+  },
+
+  "consumable_properties": [
+    "main_brush_life", "side_brush_life", "filter_life",
+    "mop_life", "dust_bag_life"
+  ],
+
+  "status_map": {
+    "1":  "idle",
+    "2":  "charging",
+    "3":  "break_charging",
+    "4":  "sweeping",
+    "5":  "paused",
+    "6":  "returning",
+    "7":  "going_to_wash",
+    "8":  "remote_control",
+    "9":  "charged",
+    "10": "building_map",
+    "11": "updating",
+    "12": "station_working",
+    "13": "station_recharge",
+    "14": "station_working",
+    "15": "error",
+    "16": "sweeping_mopping",
+    "17": "mopping",
+    "18": "mapping_paused",
+    "19": "return_break",
+    "20": "wash_break",
+    "21": "return_building_map"
+  },
+
+  "value_maps": {
+    "fan_speed":      {"1": "silent", "2": "basic", "3": "strong", "4": "full_speed"},
+    "water_level":    {"0": "off", "1": "low", "2": "medium", "3": "high"},
+    "sweep_mop_type": {"1": "sweeping", "2": "mopping", "3": "sweeping_mopping", "4": "sweeping_then_mopping"},
+    "charging_true":  1
+  },
+
+  "active_statuses": [4, 7, 12, 14, 16, 17],
+  "area_divisor": 100
+}
