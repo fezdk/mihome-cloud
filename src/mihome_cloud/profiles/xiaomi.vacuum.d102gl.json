@@ -76,5 +76,6 @@
   },
 
   "active_statuses": [4, 7, 12, 14, 16, 17],
+  "error_statuses": [5, 15],
   "area_divisor": 100
 }

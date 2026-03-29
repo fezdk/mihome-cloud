@@ -112,10 +112,21 @@ class StationMixin:
 
 
 class FaultMixin:
-    """Devices that report fault/error codes."""
+    """Devices that report fault/error codes.
+
+    Note: The fault property is read-only and may retain the last error code
+    even after the device recovers. The fault is only considered active when
+    the device status indicates an error or paused state. Use `has_active_fault()`
+    to check if the fault is current, not `has_fault()` which just checks the
+    raw code.
+    """
 
     def fault(self) -> str | None:
-        """Get current fault as a human-readable string, or None if no fault."""
+        """Get the fault code as a human-readable string, or None if code is 0.
+
+        Note: This returns the raw fault regardless of status. Use
+        `has_active_fault()` to check if it's actually blocking the device.
+        """
         code = self.get_property("fault")
         if not code or code == 0:
             return None
@@ -123,13 +134,26 @@ class FaultMixin:
         return lookup_fault(self.model, code)
 
     def fault_code(self) -> int:
-        """Get raw fault code (0 = no fault)."""
+        """Get raw fault code (0 = no fault, may be stale after recovery)."""
         return self.get_property("fault") or 0
 
     def has_fault(self) -> bool:
-        """Whether the device has an active fault."""
+        """Whether the fault code is non-zero (may be stale — see has_active_fault)."""
         code = self.get_property("fault")
         return bool(code and code != 0)
+
+    def has_active_fault(self) -> bool:
+        """Whether the device has an active fault blocking operation.
+
+        Checks both the fault code AND the device status — a non-zero fault
+        while charging normally is considered stale/residual.
+        """
+        code = self.get_property("fault")
+        if not code or code == 0:
+            return False
+        status = self.get_property("status")
+        error_statuses = self.profile.get("error_statuses", [5, 15])
+        return status in error_statuses
 
     def has_interrupted_task(self) -> bool:
         """Whether the device has an unfinished task from a previous error.
@@ -138,4 +162,9 @@ class FaultMixin:
         """
         fault = self.get_property("fault")
         area = self.get_property("cleaning_area")
-        return bool(fault and fault != 0 and area and area > 0)
+        if not (fault and fault != 0 and area and area > 0):
+            return False
+        # Only counts if not currently busy
+        status = self.get_property("status")
+        active = self.profile.get("active_statuses", [])
+        return status not in active

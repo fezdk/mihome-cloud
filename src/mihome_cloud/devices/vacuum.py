@@ -141,8 +141,10 @@ class MiHomeVacuum(MiHomeDevice, BatteryMixin, ConsumablesMixin,
             label = self.profile.get("status_map", {}).get(str(status), str(status))
             return f"Vacuum is already busy ({label}). Send 'stop' first."
 
-        area_divisor = self.profile.get("area_divisor", 100)
-        if fault and fault != 0 and area and area > 0:
+        # Only warn about interrupted tasks if fault is actually active
+        error_statuses = self.profile.get("error_statuses", [5, 15])
+        if status in error_statuses and fault and fault != 0 and area and area > 0:
+            area_divisor = self.profile.get("area_divisor", 100)
             fault_name = self.fault() or str(fault)
             area_m2 = area / area_divisor
             return (
@@ -183,12 +185,16 @@ class MiHomeVacuum(MiHomeDevice, BatteryMixin, ConsumablesMixin,
                         result["status"] = smt_map[str(smt)]
                 continue
 
-            # Fault
+            # Fault — only report if status indicates an actual error
             if name == "fault":
                 if value and value != 0:
-                    result["fault_code"] = value
-                    from mihome_cloud.fault_codes import lookup_fault
-                    result["fault"] = lookup_fault(self.model, value)
+                    status_val = raw.get("status", 0)
+                    error_statuses = self.profile.get("error_statuses", [5, 15])
+                    if status_val in error_statuses:
+                        result["fault_code"] = value
+                        from mihome_cloud.fault_codes import lookup_fault
+                        result["fault"] = lookup_fault(self.model, value)
+                    # else: stale fault code from previous error, don't report
                 continue
 
             # Charging
