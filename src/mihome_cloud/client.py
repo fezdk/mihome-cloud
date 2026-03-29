@@ -41,24 +41,29 @@ def _generate_nonce() -> str:
     return base64.b64encode(b).decode()
 
 
+def _b64pad(s: str) -> str:
+    """Ensure base64 string has proper padding."""
+    return s + "=" * ((4 - len(s) % 4) % 4)
+
+
 def _signed_nonce(ssecurity: str, nonce: str) -> str:
     """SHA-256(ssecurity + nonce) as base64."""
-    h = hashlib.sha256(base64.b64decode(ssecurity) + base64.b64decode(nonce))
+    h = hashlib.sha256(base64.b64decode(_b64pad(ssecurity)) + base64.b64decode(_b64pad(nonce)))
     return base64.b64encode(h.digest()).decode()
 
 
 def _rc4_encrypt(key_b64: str, plaintext: str) -> str:
     """RC4-encrypt with 1024-byte keystream skip."""
-    r = ARC4.new(base64.b64decode(key_b64))
+    r = ARC4.new(base64.b64decode(_b64pad(key_b64)))
     r.encrypt(bytes(1024))
     return base64.b64encode(r.encrypt(plaintext.encode())).decode()
 
 
 def _rc4_decrypt(key_b64: str, ciphertext_b64: str) -> bytes:
     """RC4-decrypt with 1024-byte keystream skip."""
-    r = ARC4.new(base64.b64decode(key_b64))
+    r = ARC4.new(base64.b64decode(_b64pad(key_b64)))
     r.encrypt(bytes(1024))
-    return r.encrypt(base64.b64decode(ciphertext_b64))
+    return r.encrypt(base64.b64decode(_b64pad(ciphertext_b64)))
 
 
 def _enc_signature(url: str, method: str, snonce: str, params: dict) -> str:

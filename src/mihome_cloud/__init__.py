@@ -27,6 +27,8 @@ Usage:
 """
 
 from mihome_cloud.client import MiHomeCloud
+from mihome_cloud.fault_codes import lookup_fault
+from mihome_cloud.auth import interactive_login, XiaomiAuth
 
-__all__ = ["MiHomeCloud"]
-__version__ = "0.1.0"
+__all__ = ["MiHomeCloud", "lookup_fault", "interactive_login", "XiaomiAuth"]
+__version__ = "0.2.0"
