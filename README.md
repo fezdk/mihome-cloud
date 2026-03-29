@@ -9,46 +9,25 @@ lights, sensors, etc.
 ## Installation
 
 ```bash
-pip install mihome-cloud
+pip install git+https://github.com/fezdk/mihome-cloud.git
 ```
 
-Dependencies: `requests` + `pycryptodome` (installed automatically).
+Or clone and install locally:
 
-## Quick Start
-
-```python
-import json
-from mihome_cloud import MiHomeCloud, MiHomeVacuum
-from mihome_cloud.auth import interactive_login
-
-# First time: authenticate (handles CAPTCHA + 2FA)
-state = interactive_login("user@example.com", "password", country="de",
-                          save_to="auth_state.json")
-
-# Create cloud client
-cloud = MiHomeCloud("user@example.com", "password", country="de")
-cloud.restore_auth_state(json.load(open("auth_state.json")))
-
-# Find your vacuum
-devices = cloud.get_devices()
-for d in devices:
-    print(f"{d['did']}: {d['name']} ({d['model']})")
-
-# Create a high-level vacuum object (auto-loads device profile)
-vacuum = MiHomeVacuum.from_cloud(cloud, did="1173085625")
-
-# Use it
-print(vacuum.status())           # "charging"
-print(vacuum.battery_level())    # 100
-print(vacuum.rooms())            # {"Kitchen": 4, "Living room": 3, ...}
-vacuum.clean_rooms(["kitchen"])
+```bash
+git clone https://github.com/fezdk/mihome-cloud.git
+cd mihome-cloud
+pip install -e .
 ```
 
-## Authentication
+Dependencies: `requests` + `pycryptodome`.
+
+## Setup
+
+### 1. Authenticate
 
 Xiaomi requires SSO authentication, which may involve CAPTCHA and/or 2FA.
-
-### First-Time Setup
+Run the interactive helper once to create `auth_state.json`:
 
 ```python
 from mihome_cloud.auth import interactive_login
@@ -61,15 +40,40 @@ state = interactive_login(
 )
 ```
 
-The helper handles:
-- **CAPTCHA** — shows URL to view the image + saves it locally
-- **2FA** — sends email code, prompts you to enter it
-- **Token extraction** — captures tokens from the full redirect chain
+This handles CAPTCHA, 2FA email codes, and token extraction. You only need
+to do this once — the saved tokens auto-refresh.
 
-**Important:** Xiaomi rate-limits 2FA to 3-5 requests per day. Tokens are
-saved immediately after auth — don't worry if device listing fails afterward.
+### 2. Use the Library
 
-### Subsequent Runs
+```python
+import json
+from mihome_cloud import MiHomeCloud, MiHomeVacuum
+
+# Load saved auth
+cloud = MiHomeCloud("user@example.com", "password", country="de")
+cloud.restore_auth_state(json.load(open("auth_state.json")))
+
+# Find your devices
+for d in cloud.get_devices():
+    print(f"{d['did']}: {d['name']} ({d['model']})")
+
+# Control your vacuum
+vacuum = MiHomeVacuum.from_cloud(cloud, did="1173085625")
+print(vacuum.status())           # "charging"
+print(vacuum.battery_level())    # 100
+print(vacuum.rooms())            # {"Kitchen": 4, "Living room": 3, ...}
+vacuum.clean_rooms(["kitchen"])
+```
+
+## Authentication Details
+
+### Notes
+- Xiaomi rate-limits 2FA to 3-5 requests per day — don't retry excessively
+- Tokens are saved immediately after auth, before device listing
+- If device listing fails but auth succeeded, the tokens are still valid
+- Tokens auto-refresh on expiry; you shouldn't need to re-authenticate
+
+### Restoring a Session
 
 ```python
 import json
