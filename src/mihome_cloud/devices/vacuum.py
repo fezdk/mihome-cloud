@@ -49,17 +49,8 @@ class MiHomeVacuum(MiHomeDevice, BatteryMixin, ConsumablesMixin,
         code = self.get_property("status")
         label = self.profile.get("status_map", {}).get(str(code), f"unknown_{code}")
 
-        # Enrich with sweep_mop_type if actively cleaning
-        active = self.profile.get("active_statuses", [])
-        if code in active:
-            try:
-                smt = self.get_property("sweep_mop_type")
-                smt_map = self.profile.get("value_maps", {}).get("sweep_mop_type", {})
-                if smt and str(smt) in smt_map:
-                    label = smt_map[str(smt)]
-            except Exception:
-                pass
-
+        # Program selection is not current activity. In particular, busy also
+        # includes washing/station operations, which must retain their labels.
         return label
 
     def status_code(self) -> int:
@@ -173,27 +164,32 @@ class MiHomeVacuum(MiHomeDevice, BatteryMixin, ConsumablesMixin,
             if value is None:
                 continue
 
-            # Status — enriched with sweep_mop_type
+            # Keep actual activity separate from the selected cleaning program.
             if name == "status":
                 result["status"] = self.profile.get("status_map", {}).get(str(value), str(value))
                 result["status_code"] = value
-                active = self.profile.get("active_statuses", [])
-                if value in active:
-                    smt = raw.get("sweep_mop_type")
-                    smt_map = self.profile.get("value_maps", {}).get("sweep_mop_type", {})
-                    if smt and str(smt) in smt_map:
-                        result["status"] = smt_map[str(smt)]
                 continue
 
             # Fault — only report if status indicates an actual error
             if name == "fault":
+                result["fault_code_raw"] = value
+                result["fault_active"] = (
+                    bool(value and raw["status"] in self.profile.get("error_statuses", [5, 15]))
+                    if raw.get("status") is not None else (False if value == 0 else None)
+                )
+                if value == 0:
+                    result["fault_code"] = 0
+                    result["fault"] = "none"
                 if value and value != 0:
                     status_val = raw.get("status", 0)
                     error_statuses = self.profile.get("error_statuses", [5, 15])
                     if status_val in error_statuses:
                         result["fault_code"] = value
-                        from mihome_cloud.fault_codes import lookup_fault
+                        from mihome_cloud.fault_codes import lookup_fault, lookup_fault_message
                         result["fault"] = lookup_fault(self.model, value)
+                        message = lookup_fault_message(self.model, value)
+                        if message:
+                            result["fault_message"] = message
                     # else: stale fault code from previous error, don't report
                 continue
 

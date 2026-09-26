@@ -28,7 +28,7 @@ Usage:
 
 from mihome_cloud.client import MiHomeCloud
 from mihome_cloud.device import MiHomeDevice
-from mihome_cloud.fault_codes import lookup_fault
+from mihome_cloud.fault_codes import lookup_fault, lookup_fault_message
 from mihome_cloud.auth import interactive_login, XiaomiAuth
 from mihome_cloud.devices import MiHomeVacuum
 
@@ -37,6 +37,7 @@ __all__ = [
     "MiHomeDevice",
     "MiHomeVacuum",
     "lookup_fault",
+    "lookup_fault_message",
     "interactive_login",
     "XiaomiAuth",
 ]

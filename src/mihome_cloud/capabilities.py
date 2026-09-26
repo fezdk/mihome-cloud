@@ -137,6 +137,14 @@ class FaultMixin:
         """Get raw fault code (0 = no fault, may be stale after recovery)."""
         return self.get_property("fault") or 0
 
+    def fault_message(self) -> str | None:
+        """Get vendor-facing guidance text for the current fault, if known."""
+        code = self.fault_code()
+        if not code:
+            return None
+        from mihome_cloud.fault_codes import lookup_fault_message
+        return lookup_fault_message(self.model, code)
+
     def has_fault(self) -> bool:
         """Whether the fault code is non-zero (may be stale — see has_active_fault)."""
         code = self.get_property("fault")

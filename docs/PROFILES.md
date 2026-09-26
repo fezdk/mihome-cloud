@@ -82,12 +82,28 @@ These names are recognized by the mixins and device classes:
 
 ### Used by MiHomeVacuum
 - `status` — Numeric status code
+- `base_station_working_status` — Raw station telemetry (X20 Pro: service 2,
+  property 18). Its JSON/internal mode codes are not interpreted without a
+  verified device-specific mapping.
 - `sweep_mop_type` — Current cleaning mode
 - `cleaning_area` — Area cleaned (raw, divided by `area_divisor`)
 - `cleaning_time` — Time cleaned (seconds)
 - `fan_speed` — Suction level
 - `water_level` — Mop water output
 - `carpet_boost` — Carpet boost enabled
+
+`status()` and `full_state()["status"]` describe the actual activity from
+`status_map`; `sweep_mop_type` is the independently selected cleaning program.
+Being busy (`active_statuses`) is not proof of floor cleaning: it includes
+returning for washing and station operations. Never overwrite those activity
+labels with the selected program. For X20 Pro, status 4 is Sweeping, 7 GoWash,
+14 StationWorking, and 15 Error in the MIoT specification.
+
+`full_state()` retains `fault_code_raw` even outside a fault state and exposes
+`fault_active` separately. A raw nonzero code can be residual/informational;
+only an error-capable state plus a nonzero fault activates it. Missing status
+with a nonzero fault leaves `fault_active` unknown (`None`). A measured zero
+is exposed as `fault_code=0, fault="none"`; missing telemetry is not zero.
 
 ## Standard Action Names
 

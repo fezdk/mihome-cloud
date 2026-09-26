@@ -139,7 +139,16 @@ DREAME_FAULTS: dict[int, str] = {
 XIAOMI_FAULTS: dict[int, str] = {
     0: "no_error",
     100008: "sensor_warning",           # Often reported at idle, may be informational
+    210030: "clean_water_tank_low",     # App: add water to clean water tank; message may also mention dirty tank cleaning
+    320002: "brush_error",              # App: Brush error, please check and clean the brush
+    320013: "mop_pad_holder_stuck",     # App: Mop pad holder stuck
     320004: "drive_wheel_error",        # Wheel stuck or blocked
+    340001: "mop_pad_holder_stuck",     # App: Mop pad holder stuck
+}
+
+XIAOMI_FAULT_MESSAGES: dict[int, str] = {
+    320013: "Please check and clean the mop pad holder.",
+    340001: "Please check and clean the mop pad holder.",
 }
 
 def lookup_fault(model: str, code: int) -> str:
@@ -163,3 +172,17 @@ def lookup_fault(model: str, code: int) -> str:
 
     # Unknown model family — try both maps
     return XIAOMI_FAULTS.get(code) or DREAME_FAULTS.get(code) or f"unknown_{code}"
+
+
+def lookup_fault_message(model: str, code: int) -> str | None:
+    """Look up the vendor-facing fault guidance text, if known."""
+    if code == 0:
+        return None
+
+    if model.startswith("xiaomi.vacuum."):
+        return XIAOMI_FAULT_MESSAGES.get(code)
+
+    if model.startswith("dreame.vacuum."):
+        return None
+
+    return XIAOMI_FAULT_MESSAGES.get(code)
