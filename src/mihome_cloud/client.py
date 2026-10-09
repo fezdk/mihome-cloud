@@ -201,38 +201,61 @@ class MiHomeCloud:
         self._client_id = state.get("client_id", self._client_id)
 
     def refresh_session(self) -> None:
-        """Exchange the saved Xiaomi account session for a fresh service token."""
+        """Verify a replacement session before changing the active credentials."""
         if not self._user_id or not self._pass_token:
             raise RuntimeError("Xiaomi account session is unavailable; manual re-authentication required.")
         headers = {"User-Agent": _USER_AGENT.format(cid=self._client_id)}
-        response = self._session.get(
-            "https://account.xiaomi.com/pass/serviceLogin",
-            params={"sid": "xiaomiio", "_json": "true"},
-            headers=headers,
-            cookies={"userId": self._user_id, "passToken": self._pass_token,
-                     "deviceId": self._client_id, "sdkVersion": "3.8.6"},
-            timeout=15,
-        )
-        if response.status_code != 200:
-            raise RuntimeError("Xiaomi account session was rejected; manual re-authentication required.")
+        # Account/STS redirects may set cookies. Keep those away from the active
+        # request session until the replacement has passed a cloud API probe.
+        with requests.Session() as renewal_session:
+            response = renewal_session.get(
+                "https://account.xiaomi.com/pass/serviceLogin",
+                params={"sid": "xiaomiio", "_json": "true"},
+                headers=headers,
+                cookies={"userId": self._user_id, "passToken": self._pass_token,
+                         "deviceId": self._client_id, "sdkVersion": "3.8.6"},
+                timeout=15,
+            )
+            if response.status_code != 200:
+                raise RuntimeError("Xiaomi account session was rejected; manual re-authentication required.")
+            try:
+                data = _parse_response(response.text)
+            except (ValueError, TypeError) as exc:
+                raise RuntimeError("Xiaomi account session response was invalid; manual re-authentication required.") from exc
+            if data.get("code") != 0 or not data.get("ssecurity") or not data.get("location"):
+                raise RuntimeError("Xiaomi account session was rejected; manual re-authentication required.")
+            location = str(data["location"])
+            if data.get("nonce") and "clientSign=" not in location:
+                signed = f"nonce={data['nonce']}&{data['ssecurity']}"
+                signature = base64.b64encode(hashlib.sha1(signed.encode()).digest()).decode()
+                location += ("&" if "?" in location else "?") + "clientSign=" + quote(signature, safe="")
+            token_response = renewal_session.get(location, headers=headers, timeout=15)
+            service_token = token_response.cookies.get("serviceToken")
+            if token_response.status_code != 200 or not service_token:
+                raise RuntimeError("Xiaomi did not issue a new service token; manual re-authentication required.")
+
+        candidate_user_id = str(data.get("userId") or self._user_id)
+        candidate_security = str(data["ssecurity"])
+        probe = MiHomeCloud(self._username, self._password, country=self._country,
+                            client_id=self._client_id)
         try:
-            data = _parse_response(response.text)
-        except (ValueError, TypeError) as exc:
-            raise RuntimeError("Xiaomi account session response was invalid; manual re-authentication required.") from exc
-        if data.get("code") != 0 or not data.get("ssecurity") or not data.get("location"):
-            raise RuntimeError("Xiaomi account session was rejected; manual re-authentication required.")
-        location = str(data["location"])
-        if data.get("nonce") and "clientSign=" not in location:
-            signed = f"nonce={data['nonce']}&{data['ssecurity']}"
-            signature = base64.b64encode(hashlib.sha1(signed.encode()).digest()).decode()
-            location += ("&" if "?" in location else "?") + "clientSign=" + quote(signature, safe="")
-        token_response = self._session.get(location, headers=headers, timeout=15)
-        service_token = token_response.cookies.get("serviceToken")
-        if token_response.status_code != 200 or not service_token:
-            raise RuntimeError("Xiaomi did not issue a new service token; manual re-authentication required.")
+            probe.restore_auth_state({"user_id": candidate_user_id,
+                                      "ssecurity": candidate_security,
+                                      "service_token": service_token,
+                                      "client_id": self._client_id})
+            result = probe._rpc(
+                f"{probe._base_url}/home/device_list",
+                {"getVirtualModel": False, "getHuamiDevices": 0},
+                allow_reauth=False,
+            )
+            if result.get("code") != 0:
+                raise RuntimeError("Xiaomi rejected the renewed service token; existing session retained.")
+        finally:
+            probe.close()
+
         self._service_token = service_token
-        self._ssecurity = str(data["ssecurity"])
-        self._user_id = str(data.get("userId") or self._user_id)
+        self._ssecurity = candidate_security
+        self._user_id = candidate_user_id
         self._pass_token = str(data.get("passToken") or self._pass_token)
         self._session_refreshed_at = time.time()
         self._next_refresh_attempt_at = 0.0
@@ -341,7 +364,8 @@ class MiHomeCloud:
 
         logger.info("MiHome cloud: logged in as user %s", self._user_id)
 
-    def _rpc(self, url: str, data: dict, *, retried: bool = False) -> dict:
+    def _rpc(self, url: str, data: dict, *, retried: bool = False,
+             allow_reauth: bool = True) -> dict:
         """Send an RC4-encrypted RPC request to the MiHome API."""
         if not self._service_token or not self._ssecurity:
             raise RuntimeError("Not logged in. Call login() first.")
@@ -373,14 +397,13 @@ class MiHomeCloud:
         )
 
         if resp.status_code == 401 or "SERVICETOKEN_EXPIRED" in resp.text:
+            if not allow_reauth:
+                raise RuntimeError("Xiaomi rejected the renewed service token; existing session retained.")
             if retried:
                 raise RuntimeError("Xiaomi cloud rejected the renewed session; manual re-authentication required.")
             logger.info("MiHome cloud: service session rejected, renewing")
             if self._pass_token:
-                try:
-                    self.refresh_session()
-                except RuntimeError:
-                    self.login()
+                self.refresh_session()
             else:
                 self.login()
             return self._rpc(url, data, retried=True)
