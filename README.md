@@ -40,8 +40,10 @@ state = interactive_login(
 )
 ```
 
-This handles CAPTCHA, 2FA email codes, and token extraction. You only need
-to do this once — the saved tokens auto-refresh.
+This handles CAPTCHA, 2FA email codes, and token extraction. Save the returned
+state in a private file (mode `0600`); it contains credentials equivalent to a
+logged-in Xiaomi account session. Xiaomi may still require a new interactive
+login later.
 
 ### 2. Use the Library
 
@@ -69,9 +71,15 @@ vacuum.clean_rooms(["kitchen"])
 
 ### Notes
 - Xiaomi rate-limits 2FA to 3-5 requests per day — don't retry excessively
-- Tokens are saved immediately after auth, before device listing
-- If device listing fails but auth succeeded, the tokens are still valid
-- Tokens auto-refresh on expiry; you shouldn't need to re-authenticate
+- The state includes `pass_token` and `session_refreshed_at` after a new login.
+  Older four-field state files still load, but cannot use account-session renewal.
+- `refresh_if_due()` renews a session after 30 days by default. A failed
+  scheduled attempt can be retried after one hour; callers may continue using
+  the current service session while it still works. A rejected service request
+  tries account-session renewal once, then falls back to one password login if
+  needed. A second rejection requires manual action.
+- Renewal is not guaranteed forever: Xiaomi can invalidate the account session
+  or require CAPTCHA/2FA. Never print or commit the saved state.
 
 ### Restoring a Session
 
@@ -82,7 +90,7 @@ from mihome_cloud import MiHomeCloud
 cloud = MiHomeCloud("user@example.com", "password", country="de")
 with open("auth_state.json") as f:
     cloud.restore_auth_state(json.load(f))
-# No login() needed — token auto-refreshes on expiry
+# No login() needed while the account session remains valid.
 ```
 
 ### Server Regions

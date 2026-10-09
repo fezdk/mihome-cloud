@@ -7,7 +7,7 @@ Usage:
     from mihome_cloud.auth import interactive_login
 
     state = interactive_login("user@example.com", "password", country="de")
-    # state is a dict with user_id, ssecurity, service_token, client_id
+    # state also includes a pass_token for renewing the service session
     # Save it to a file for reuse with MiHomeCloud.restore_auth_state()
 
 Protocol adapted from PiotrMachowski/Xiaomi-cloud-tokens-extractor (MIT).
@@ -24,6 +24,7 @@ import random
 import string
 import tempfile
 import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -47,6 +48,13 @@ def _generate_device_id():
 
 def _to_json(text):
     return json.loads(text.replace("&&&START&&&", ""))
+
+
+def _response_keys(data: Any) -> list[str]:
+    """Return non-secret response keys for auth progress logging."""
+    if not isinstance(data, dict):
+        return []
+    return sorted(str(key) for key in data.keys())
 
 
 def _b64pad(s):
@@ -111,8 +119,9 @@ class XiaomiAuth:
         self.ssecurity = None
         self.user_id = None
         self.service_token = None
+        self.pass_token = None
 
-    def get_state(self) -> dict[str, str]:
+    def get_state(self) -> dict[str, Any]:
         """Export auth state for persistence.
 
         Save this dict to a JSON file. Pass it to
@@ -122,8 +131,53 @@ class XiaomiAuth:
             "user_id": self.user_id or "",
             "ssecurity": self.ssecurity or "",
             "service_token": self.service_token or "",
+            "pass_token": self.pass_token or "",
             "client_id": self.device_id,
+            "session_refreshed_at": time.time(),
         }
+
+    def _capture_pass_token(self, data: dict | None = None) -> None:
+        """Keep the Xiaomi account session returned by login or its redirects."""
+        token = (data or {}).get("passToken") or self._get_cookie_value("passToken")
+        if token:
+            self.pass_token = str(token)
+
+    def _capture_user_id(self, data: dict | None = None) -> None:
+        """Remember Xiaomi's account ID from response data or session cookies."""
+        data = data or {}
+        user_id = data.get("userId")
+        if not user_id:
+            for cookie in self.session.cookies:
+                if cookie.name == "userId" and cookie.value:
+                    user_id = cookie.value
+                    break
+        if user_id:
+            self.user_id = str(user_id)
+
+    def _get_cookie_value(self, name: str, *, domain: str | None = None) -> str | None:
+        """Return a cookie value without raising on duplicate cookie names."""
+        for cookie in self.session.cookies:
+            if cookie.name != name or not cookie.value:
+                continue
+            if domain and cookie.domain != domain:
+                continue
+            return str(cookie.value)
+        return None
+
+    def _print_progress(self, step: str, *, status_code: int | None = None, data: dict | None = None) -> None:
+        """Print non-secret auth progress before continuing to the next step."""
+        bits = [f"[{step}]"]
+        if status_code is not None:
+            bits.append(f"HTTP {status_code}")
+        if data is not None:
+            bits.append(f"keys={_response_keys(data)}")
+            bits.append(f"has_user_id={bool(data.get('userId'))}")
+            bits.append(f"has_ssecurity={bool(data.get('ssecurity'))}")
+            bits.append(f"has_service_token={bool(data.get('serviceToken'))}")
+            bits.append(f"has_location={bool(data.get('location'))}")
+            bits.append(f"captcha_required={bool(data.get('captchaUrl'))}")
+            bits.append(f"two_factor_required={bool(data.get('notificationUrl'))}")
+        print(" ".join(bits), flush=True)
 
     def login(self, username: str, password: str) -> bool:
         """Run the full 3-step login flow with CAPTCHA and 2FA handling.
@@ -143,13 +197,15 @@ class XiaomiAuth:
             headers=headers, cookies={"userId": username},
         )
         data = _to_json(resp.text)
+        self._print_progress("step 1 serviceLogin", status_code=resp.status_code, data=data)
         if resp.status_code != 200 or "_sign" not in data:
             if data.get("ssecurity"):
                 self.ssecurity = data["ssecurity"]
-                self.user_id = str(data.get("userId", ""))
-                self.service_token = data.get("serviceToken") or self.session.cookies.get("serviceToken")
-                return bool(self.service_token)
-            print(f"Step 1 failed: {data}")
+                self._capture_user_id(data)
+                self._capture_pass_token(data)
+                self.service_token = data.get("serviceToken") or self._get_cookie_value("serviceToken")
+                return bool(self.service_token and self.user_id)
+            print(f"Step 1 failed (Xiaomi code {data.get('code', 'unknown')}).")
             return False
 
         sign = data["_sign"]
@@ -169,6 +225,7 @@ class XiaomiAuth:
             headers=headers, params=fields, allow_redirects=False,
         )
         data = _to_json(resp.text)
+        self._print_progress("step 2 credentials", status_code=resp.status_code, data=data)
 
         # Handle CAPTCHA
         if "captchaUrl" in data and data["captchaUrl"]:
@@ -196,22 +253,23 @@ class XiaomiAuth:
                 headers=headers, params=fields, allow_redirects=False,
             )
             data = _to_json(resp.text)
+            self._print_progress("step 2 captcha", status_code=resp.status_code, data=data)
             if data.get("code") == 87001:
                 print("Invalid CAPTCHA.")
                 return False
 
         # Handle 2FA
         if "notificationUrl" in data:
-            if data.get("userId"):
-                self.user_id = str(data["userId"])
+            self._capture_user_id(data)
             return self._handle_2fa(data["notificationUrl"], headers)
 
         if "ssecurity" not in data or len(str(data.get("ssecurity", ""))) < 4:
-            print(f"Step 2 failed: {data}")
+            print(f"Step 2 failed (Xiaomi code {data.get('code', 'unknown')}).")
             return False
 
         self.ssecurity = data["ssecurity"]
-        self.user_id = str(data.get("userId", ""))
+        self._capture_user_id(data)
+        self._capture_pass_token(data)
         location = data.get("location")
         if not location:
             print("No redirect location.")
@@ -220,8 +278,18 @@ class XiaomiAuth:
         # Step 3: Follow redirect to get serviceToken
         resp = self.session.get(location, headers=headers)
         self.service_token = resp.cookies.get("serviceToken")
+        self._capture_user_id(data)
+        self._capture_pass_token(data)
+        print(
+            f"[step 3 sts redirect] HTTP {resp.status_code} "
+            f"has_service_token={bool(self.service_token)} has_user_id={bool(self.user_id)}",
+            flush=True,
+        )
         if not self.service_token:
             print("Step 3 failed: no serviceToken.")
+            return False
+        if not self.user_id:
+            print("Step 3 failed: no Xiaomi userId in response or cookies.")
             return False
 
         return True
@@ -230,21 +298,26 @@ class XiaomiAuth:
         """Handle email-based 2FA verification."""
         print("\n2FA verification required. A code will be sent to your email.")
 
-        self.session.get(notification_url, headers=headers)
+        resp = self.session.get(notification_url, headers=headers)
+        print(f"[2FA open notification] HTTP {resp.status_code}", flush=True)
         context = parse_qs(urlparse(notification_url).query).get("context", [""])[0]
+        print(f"[2FA context] present={bool(context)}", flush=True)
 
-        self.session.get(
+        resp = self.session.get(
             "https://account.xiaomi.com/identity/list",
             params={"sid": "xiaomiio", "context": context, "_locale": "en_US"},
             headers=headers,
         )
+        print(f"[2FA identity list] HTTP {resp.status_code}", flush=True)
 
-        self.session.post(
+        resp = self.session.post(
             "https://account.xiaomi.com/identity/auth/sendEmailTicket",
             params={"_dc": str(int(time.time() * 1000)), "sid": "xiaomiio", "context": context, "mask": "0", "_locale": "en_US"},
             data={"retry": "0", "icode": "", "_json": "true", "ick": self.session.cookies.get("ick", "")},
             headers=headers,
         )
+        send_data = _to_json(resp.text)
+        self._print_progress("2FA send email", status_code=resp.status_code, data=send_data)
 
         code = input("\nEnter the 2FA code from your email: ").strip()
         if not code:
@@ -256,12 +329,14 @@ class XiaomiAuth:
             data={"_flag": "8", "ticket": code, "trust": "false", "_json": "true", "ick": self.session.cookies.get("ick", "")},
             headers=headers,
         )
+        verify_data = _to_json(resp.text) if resp.text else {}
+        self._print_progress("2FA verify email", status_code=resp.status_code, data=verify_data)
         if resp.status_code != 200:
             print(f"2FA verification failed: {resp.status_code}")
             return False
 
         try:
-            data = _to_json(resp.text)
+            data = verify_data
             location = data.get("location")
         except Exception:
             location = None
@@ -272,13 +347,25 @@ class XiaomiAuth:
             if "identity/result/check" in location:
                 resp = self.session.get(location, headers=headers, allow_redirects=False)
                 end_url = resp.headers.get("Location", "")
+                print(
+                    f"[2FA result check] HTTP {resp.status_code} has_next_location={bool(end_url)}",
+                    flush=True,
+                )
             else:
                 end_url = location
 
             if end_url:
                 resp = self.session.get(end_url, headers=headers, allow_redirects=False)
+                print(
+                    f"[2FA auth end] HTTP {resp.status_code} has_extension_pragma={bool(resp.headers.get('extension-pragma'))} has_location={bool(resp.headers.get('Location'))}",
+                    flush=True,
+                )
                 if resp.status_code == 200 and "Tips" in resp.text:
                     resp = self.session.get(end_url, headers=headers, allow_redirects=False)
+                    print(
+                        f"[2FA auth end retry] HTTP {resp.status_code} has_extension_pragma={bool(resp.headers.get('extension-pragma'))} has_location={bool(resp.headers.get('Location'))}",
+                        flush=True,
+                    )
 
                 # ssecurity is in the extension-pragma header
                 ext_pragma = resp.headers.get("extension-pragma")
@@ -299,14 +386,22 @@ class XiaomiAuth:
                         sts_url = m.group(0)
                 if sts_url:
                     resp = self.session.get(sts_url, headers=headers, allow_redirects=True)
-                    self.service_token = self.session.cookies.get("serviceToken", domain=".sts.api.io.mi.com")
+                    self.service_token = self._get_cookie_value("serviceToken", domain=".sts.api.io.mi.com")
                     if not self.service_token:
-                        self.service_token = self.session.cookies.get("serviceToken")
+                        self.service_token = self._get_cookie_value("serviceToken")
+                    print(
+                        f"[2FA sts redirect] HTTP {resp.status_code} has_service_token={bool(self.service_token)}",
+                        flush=True,
+                    )
 
         if not self.service_token:
-            self.service_token = self.session.cookies.get("serviceToken")
+            self.service_token = self._get_cookie_value("serviceToken")
 
-        return bool(self.service_token and self.ssecurity)
+        self._capture_user_id()
+        self._capture_pass_token()
+        if self.service_token and self.ssecurity and not self.user_id:
+            print("2FA failed: no Xiaomi userId in response or cookies.")
+        return bool(self.service_token and self.ssecurity and self.user_id)
 
     def get_devices(self, country: str) -> list[dict]:
         """Fetch device list to verify authentication works."""
@@ -341,7 +436,7 @@ def interactive_login(
     password: str,
     country: str = "de",
     save_to: str | None = None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Run interactive login and return auth state.
 
     Handles CAPTCHA (shows URL + saves image) and 2FA (email code prompt).
@@ -364,28 +459,41 @@ def interactive_login(
 
         state = interactive_login("user@example.com", "password", country="de",
                                   save_to="auth_state.json")
-        # state = {"user_id": "...", "ssecurity": "...", "service_token": "...", "client_id": "..."}
+        # state also includes pass_token and session_refreshed_at
     """
     auth = XiaomiAuth()
     if not auth.login(username, password):
         raise RuntimeError("Login failed")
 
-    state = auth.get_state()
-
-    if save_to:
-        import json as _json
-        with open(save_to, "w") as f:
-            _json.dump(state, f, indent=2)
-        print(f"Auth state saved to {save_to}")
-
     # Verify
+    verified = False
     try:
         devices = auth.get_devices(country)
+        verified = True
         print(f"Authenticated. Found {len(devices)} device(s):")
         for d in devices:
             online = "online" if d.get("isOnline") else "offline"
             print(f"  - {d.get('name', '?')} ({d.get('model', '?')}, {online})")
     except Exception as e:
-        print(f"Device listing failed (auth state saved, may still work): {e}")
+        print(f"Device listing failed; auth state was not saved: {e}")
+        raise RuntimeError("Login verification failed") from e
+
+    state = auth.get_state()
+
+    if save_to and verified:
+        destination = Path(save_to)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=destination.parent,
+                                             prefix=f".{destination.name}.", delete=False) as handle:
+                temporary = Path(handle.name)
+                json.dump(state, handle, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, destination)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        print(f"Auth state saved to {save_to}")
 
     return state

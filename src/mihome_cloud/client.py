@@ -15,6 +15,7 @@ import random
 import string
 import time
 from typing import Any
+from urllib.parse import quote
 
 import requests
 from Crypto.Cipher import ARC4
@@ -94,6 +95,14 @@ def _parse_response(text: str) -> dict:
     return json.loads(text.replace("&&&START&&&", ""))
 
 
+def _cookie_value(session: requests.Session, name: str) -> str | None:
+    """Find an account cookie without ambiguity from duplicate domains."""
+    for cookie in session.cookies:
+        if cookie.name == name and cookie.value:
+            return str(cookie.value)
+    return None
+
+
 class MiHomeCloud:
     """Xiaomi MiHome cloud client for MIoT device control.
 
@@ -141,6 +150,9 @@ class MiHomeCloud:
         self._user_id: str | None = None
         self._ssecurity: str | None = None
         self._service_token: str | None = None
+        self._pass_token: str | None = None
+        self._session_refreshed_at: float | None = None
+        self._next_refresh_attempt_at = 0.0
         self._session = requests.Session()
 
         self._base_url = (
@@ -159,7 +171,7 @@ class MiHomeCloud:
         """The Xiaomi user ID (set after login)."""
         return self._user_id
 
-    def get_auth_state(self) -> dict[str, str]:
+    def get_auth_state(self) -> dict[str, Any]:
         """Export auth state for persistence between restarts.
 
         Save the returned dict to a file and pass it to
@@ -169,10 +181,12 @@ class MiHomeCloud:
             "user_id": self._user_id or "",
             "ssecurity": self._ssecurity or "",
             "service_token": self._service_token or "",
+            "pass_token": self._pass_token or "",
             "client_id": self._client_id,
+            "session_refreshed_at": self._session_refreshed_at,
         }
 
-    def restore_auth_state(self, state: dict[str, str]) -> None:
+    def restore_auth_state(self, state: dict[str, Any]) -> None:
         """Restore auth state from a previous session.
 
         If the token has expired, the next RPC call will automatically
@@ -181,7 +195,62 @@ class MiHomeCloud:
         self._user_id = state.get("user_id") or None
         self._ssecurity = state.get("ssecurity") or None
         self._service_token = state.get("service_token") or None
+        self._pass_token = state.get("pass_token") or None
+        refreshed_at = state.get("session_refreshed_at")
+        self._session_refreshed_at = float(refreshed_at) if refreshed_at else None
         self._client_id = state.get("client_id", self._client_id)
+
+    def refresh_session(self) -> None:
+        """Exchange the saved Xiaomi account session for a fresh service token."""
+        if not self._user_id or not self._pass_token:
+            raise RuntimeError("Xiaomi account session is unavailable; manual re-authentication required.")
+        headers = {"User-Agent": _USER_AGENT.format(cid=self._client_id)}
+        response = self._session.get(
+            "https://account.xiaomi.com/pass/serviceLogin",
+            params={"sid": "xiaomiio", "_json": "true"},
+            headers=headers,
+            cookies={"userId": self._user_id, "passToken": self._pass_token,
+                     "deviceId": self._client_id, "sdkVersion": "3.8.6"},
+            timeout=15,
+        )
+        if response.status_code != 200:
+            raise RuntimeError("Xiaomi account session was rejected; manual re-authentication required.")
+        try:
+            data = _parse_response(response.text)
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError("Xiaomi account session response was invalid; manual re-authentication required.") from exc
+        if data.get("code") != 0 or not data.get("ssecurity") or not data.get("location"):
+            raise RuntimeError("Xiaomi account session was rejected; manual re-authentication required.")
+        location = str(data["location"])
+        if data.get("nonce") and "clientSign=" not in location:
+            signed = f"nonce={data['nonce']}&{data['ssecurity']}"
+            signature = base64.b64encode(hashlib.sha1(signed.encode()).digest()).decode()
+            location += ("&" if "?" in location else "?") + "clientSign=" + quote(signature, safe="")
+        token_response = self._session.get(location, headers=headers, timeout=15)
+        service_token = token_response.cookies.get("serviceToken")
+        if token_response.status_code != 200 or not service_token:
+            raise RuntimeError("Xiaomi did not issue a new service token; manual re-authentication required.")
+        self._service_token = service_token
+        self._ssecurity = str(data["ssecurity"])
+        self._user_id = str(data.get("userId") or self._user_id)
+        self._pass_token = str(data.get("passToken") or self._pass_token)
+        self._session_refreshed_at = time.time()
+        self._next_refresh_attempt_at = 0.0
+        logger.info("MiHome cloud: renewed service session through Xiaomi account session")
+
+    def refresh_if_due(self, max_age_seconds: float = 30 * 86400) -> bool:
+        """Renew a refreshable session after its age limit; report if changed."""
+        if not self._pass_token or not self._session_refreshed_at:
+            return False
+        now = time.time()
+        if now < self._next_refresh_attempt_at or now - self._session_refreshed_at < max_age_seconds:
+            return False
+        try:
+            self.refresh_session()
+        except Exception:
+            self._next_refresh_attempt_at = now + 3600
+            raise
+        return True
 
     def login(self) -> None:
         """Authenticate with Xiaomi SSO.
@@ -216,12 +285,15 @@ class MiHomeCloud:
             self._service_token = data["serviceToken"]
             self._user_id = str(data.get("userId", ""))
             self._ssecurity = data.get("ssecurity", "")
+            self._pass_token = data.get("passToken") or self._pass_token
+            self._session_refreshed_at = time.time()
+            self._next_refresh_attempt_at = 0.0
             logger.info("MiHome cloud: reused existing session")
             return
 
         sign = data.get("_sign")
         if not sign:
-            raise RuntimeError(f"Login step 1 failed: {data}")
+            raise RuntimeError(f"Login step 1 failed (Xiaomi code {data.get('code', 'unknown')}).")
 
         # Step 2: Submit credentials
         password_hash = hashlib.md5(self._password.encode()).hexdigest().upper()
@@ -254,7 +326,7 @@ class MiHomeCloud:
         self._ssecurity = data.get("ssecurity", "")
 
         if not location or not self._ssecurity:
-            raise RuntimeError(f"Login step 2 failed: {data}")
+            raise RuntimeError(f"Login step 2 failed (Xiaomi code {data.get('code', 'unknown')}).")
 
         # Step 3: Follow redirect to get serviceToken
         resp = self._session.get(location, headers=headers, timeout=15)
@@ -263,9 +335,13 @@ class MiHomeCloud:
         if not self._service_token:
             raise RuntimeError("Login step 3 failed: no serviceToken in cookies")
 
+        self._pass_token = data.get("passToken") or _cookie_value(self._session, "passToken") or self._pass_token
+        self._session_refreshed_at = time.time()
+        self._next_refresh_attempt_at = 0.0
+
         logger.info("MiHome cloud: logged in as user %s", self._user_id)
 
-    def _rpc(self, url: str, data: dict) -> dict:
+    def _rpc(self, url: str, data: dict, *, retried: bool = False) -> dict:
         """Send an RC4-encrypted RPC request to the MiHome API."""
         if not self._service_token or not self._ssecurity:
             raise RuntimeError("Not logged in. Call login() first.")
@@ -297,9 +373,17 @@ class MiHomeCloud:
         )
 
         if resp.status_code == 401 or "SERVICETOKEN_EXPIRED" in resp.text:
-            logger.info("MiHome cloud: token expired, re-authenticating")
-            self.login()
-            return self._rpc(url, data)
+            if retried:
+                raise RuntimeError("Xiaomi cloud rejected the renewed session; manual re-authentication required.")
+            logger.info("MiHome cloud: service session rejected, renewing")
+            if self._pass_token:
+                try:
+                    self.refresh_session()
+                except RuntimeError:
+                    self.login()
+            else:
+                self.login()
+            return self._rpc(url, data, retried=True)
 
         dec_nonce = _signed_nonce(self._ssecurity, enc.get("_nonce", nonce))
         decrypted = _rc4_decrypt(dec_nonce, resp.text)
