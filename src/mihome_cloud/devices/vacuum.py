@@ -11,7 +11,7 @@ Usage::
     cloud = MiHomeCloud("user", "pass", country="de")
     cloud.restore_auth_state(saved_state)
 
-    vacuum = MiHomeVacuum.from_cloud(cloud, did="1173085625")
+    vacuum = MiHomeVacuum.from_cloud(cloud, did="1234567890")
     print(vacuum.status())          # "charging"
     print(vacuum.battery_level())   # 100
     vacuum.clean_rooms(["kitchen", "living-room"])
@@ -43,6 +43,19 @@ class MiHomeVacuum(MiHomeDevice, BatteryMixin, ConsumablesMixin,
     """
 
     # ── Status ──
+
+    @property
+    def maps(self):
+        """Shared opt-in map client; accessing it performs no network requests.
+
+        Currently supports Xiaomi X20 Pro only. Snapshot refreshes are explicit
+        and never included in full_state() polling.
+        """
+        from mihome_cloud.map_api import VacuumMapClient
+
+        if not hasattr(self, "_map_client"):
+            self._map_client = VacuumMapClient(self.cloud, self.did, self.model)
+        return self._map_client
 
     def status(self) -> str:
         """Current status as a human-readable string (e.g. 'charging', 'sweeping_mopping')."""

@@ -31,11 +31,18 @@ from mihome_cloud.device import MiHomeDevice
 from mihome_cloud.fault_codes import lookup_fault, lookup_fault_message
 from mihome_cloud.auth import interactive_login, XiaomiAuth
 from mihome_cloud.devices import MiHomeVacuum
+from mihome_cloud.map_api import MapInfo, MapSnapshot, VacuumMapClient, build_map_snapshot
+from mihome_cloud.maps import MapError
 
 __all__ = [
     "MiHomeCloud",
     "MiHomeDevice",
     "MiHomeVacuum",
+    "VacuumMapClient",
+    "MapInfo",
+    "MapSnapshot",
+    "MapError",
+    "build_map_snapshot",
     "lookup_fault",
     "lookup_fault_message",
     "interactive_login",

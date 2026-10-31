@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="da">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<title>Robotkort · lokal visning</title>
+<style>
+:root{font:15px system-ui,sans-serif;color:#233b48;background:#f3f3ef;color-scheme:light}
+*{box-sizing:border-box}body{margin:0;padding:24px}main{max-width:1060px;margin:auto}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+h1{font-size:24px;margin:0}p{color:#52636c;line-height:1.5}#status{font-size:13px}
+nav{display:flex;gap:18px;align-items:center;flex-wrap:wrap;margin:18px 0}
+label{display:flex;gap:6px;align-items:center}button{border:1px solid #b9c7cc;border-radius:8px;padding:8px 12px;background:white;color:inherit;font:inherit;cursor:pointer}
+button:focus-visible,input:focus-visible{outline:3px solid #447a9b;outline-offset:3px}
+.stage{position:relative;background:#f8f7f4;border:1px solid #dbe1df;border-radius:14px;overflow:hidden}
+canvas{display:block;width:100%;height:auto}#message{padding:30px;text-align:center}#message[hidden]{display:none}
+.legend{display:flex;gap:18px;flex-wrap:wrap;font-size:13px}.line{display:inline-block;width:22px;border-top:2px solid #215d7b;vertical-align:middle;margin-right:6px}.dashed{border-top-style:dashed;border-color:#a95164}
+#detail{font-size:13px;margin-top:8px}#error{color:#9b253b;white-space:normal}
+@media(max-width:500px){body{padding:12px}h1{font-size:21px}nav{gap:12px}}
+</style>
+<main>
+<header><h1 id="title">Robotkort</h1><span id="status" role="status">Henter lokalt snapshot…</span></header>
+<p id="detail">Viser seneste tilgængelige snapshot.</p>
+<nav aria-label="Kortlag">
+<label><input id="cleaning" type="checkbox" checked>Rengøring</label>
+<label><input id="transport" type="checkbox">Transport</label>
+<label><input id="labels" type="checkbox" checked>Rumnavne</label>
+<button id="refresh" type="button">Opdatér visning</button>
+</nav>
+<div class="stage"><div id="message">Indlæser kort…</div><canvas id="map" role="img" aria-label="Kort over rum med rengøringsrute og robotposition" hidden></canvas></div>
+<p id="error" role="alert"></p>
+<div class="legend"><span><i class="line"></i>Rengøring</span><span><i class="line dashed"></i>Transport</span><span>● Robot · ▣ Dock</span></div>
+</main>
+<script>
+'use strict';
+const canvas=document.querySelector('#map'), ctx=canvas.getContext('2d');
+let snapshot=null, raster=null, rasterRevision=null, loading=false, connectionError=false;
+const byId=id=>document.getElementById(id);
+function point(p){const m=snapshot.map;return [(p.x-m.origin.x)/m.resolution_mm, m.height-1-(p.y-m.origin.y)/m.resolution_mm];}
+function stamp(){
+ if(!snapshot)return;
+ const f=snapshot.freshness, fetched=f.fetched_at?new Date(f.fetched_at):null;
+ const age=fetched?Math.max(0,Math.floor((Date.now()-fetched.getTime())/1000)):null;
+ const state=connectionError?'Forbindelsen til lokale data er afbrudt':f.stale?'Opdatering fejlede · viser tidligere data':f.source==='offline_file'?'Gemt snapshot':'Cloud-snapshot';
+ byId('status').textContent=state;
+ byId('detail').textContent=fetched?'Hentet '+fetched.toLocaleString('da-DK')+' · '+age+' sek. siden. Kildens måletid er ukendt.':'Gemt kort. Optagetidspunkt ukendt.';
+}
+function draw(){
+ if(!snapshot||!raster)return;
+ const m=snapshot.map, dpr=Math.min(window.devicePixelRatio||1,3), cssWidth=canvas.parentElement.clientWidth;
+ const scale=cssWidth/m.width;
+ canvas.width=Math.round(cssWidth*dpr);canvas.height=Math.round(m.height*scale*dpr);
+ canvas.style.height=(m.height*scale)+'px';ctx.setTransform(scale*dpr,0,0,scale*dpr,0,0);
+ ctx.clearRect(0,0,m.width,m.height);ctx.imageSmoothingEnabled=false;ctx.drawImage(raster,0,0,m.width,m.height);
+ // Original route geometry: antialiasing comes from Canvas, no smoothing or dots.
+ ctx.lineJoin='round';ctx.lineCap='round';
+ for(const seg of snapshot.route.segments){
+  if(seg.kind==='cleaning'&&!byId('cleaning').checked)continue;
+  if(seg.kind==='transport'&&!byId('transport').checked)continue;
+  if(seg.kind==='unknown'||seg.points.length<2)continue;
+  ctx.strokeStyle=seg.kind==='cleaning'?'#215d7b':'#a95164';ctx.lineWidth=1.5/scale;
+  ctx.setLineDash(seg.kind==='transport'?[5/scale,4/scale]:[]);ctx.beginPath();
+  seg.points.forEach((p,i)=>{const [x,y]=point({x:p[0],y:p[1]});i?ctx.lineTo(x,y):ctx.moveTo(x,y);});ctx.stroke();
+ }
+ ctx.setLineDash([]);
+ if(snapshot.dock.available){const [x,y]=point(snapshot.dock.position);ctx.fillStyle='#24465e';ctx.strokeStyle='white';ctx.lineWidth=1.5/scale;const r=5/scale;ctx.fillRect(x-r,y-r,r*2,r*2);ctx.strokeRect(x-r,y-r,r*2,r*2);}
+ if(snapshot.robot.available){const [x,y]=point(snapshot.robot.position);ctx.beginPath();ctx.arc(x,y,snapshot.robot.footprint.diameter_mm/(2*m.resolution_mm),0,Math.PI*2);ctx.fillStyle='#e8644e';ctx.fill();ctx.strokeStyle='white';ctx.lineWidth=1.5/scale;ctx.stroke();}
+ if(byId('labels').checked){
+  ctx.font=`600 ${13/scale}px system-ui,sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';
+  for(const room of snapshot.rooms){const [x,y]=point(room.label);const name=room.name||(room.room_id!==null?'Rum '+room.room_id:'Segment '+room.grid_id);
+   const textWidth=ctx.measureText(name).width,pad=5/scale,height=21/scale;
+   ctx.fillStyle='rgba(255,255,255,.87)';ctx.fillRect(x-textWidth/2-pad,y-height/2,textWidth+pad*2,height);
+   ctx.fillStyle='#243e4b';ctx.fillText(name,x,y);
+  }
+ }
+ canvas.dataset.mapRevision=m.revision;canvas.dataset.overlayRevision=snapshot.overlay_revision;
+ canvas.dataset.ready='true';stamp();
+}
+async function refresh(){
+ if(loading||document.hidden)return;
+ loading=true;
+ try{
+  const response=await fetch('snapshot.json',{cache:'no-store',credentials:'same-origin'});
+  if(!response.ok)throw Error('snapshot');
+  const next=await response.json();
+  if(next.schema!=='mihome-map-snapshot-v1'||!/^map-[a-f0-9]{64}\.png$/.test(next.map.image))throw Error('schema');
+  let image=raster;
+  if(!raster||next.map.raster_revision!==rasterRevision){
+   image=new Image();image.src=next.map.image;await image.decode();
+   if(image.naturalWidth!==next.map.width||image.naturalHeight!==next.map.height)throw Error('dimensions');
+  }
+  // Swap only once image+snapshot agree; never combine floors during a load.
+  snapshot=next;raster=image;rasterRevision=next.map.raster_revision;connectionError=false;
+  byId('title').textContent=next.map.name||'Kort '+next.map.id;
+  byId('error').textContent=next.freshness.stale?'Seneste cloudhentning fejlede. Kortet er bevaret.':'';
+  canvas.hidden=false;byId('message').hidden=true;draw();
+ }catch(error){connectionError=true;byId('error').textContent='Kunne ikke hente det lokale snapshot. Eksisterende visning er bevaret.';if(!snapshot)byId('message').textContent='Intet kort tilgængeligt endnu.';stamp();}
+ finally{loading=false;}
+}
+for(const id of ['cleaning','transport','labels'])byId(id).addEventListener('change',draw);
+byId('refresh').addEventListener('click',refresh);
+window.addEventListener('resize',draw);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
+setInterval(refresh,5000);setInterval(stamp,1000);refresh();
+</script>
+</html>

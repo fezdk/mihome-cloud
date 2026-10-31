@@ -6,6 +6,11 @@ Provides both a **high-level device API** (profile-driven, no magic numbers)
 and **low-level raw access** for any MIoT device — vacuums, air purifiers,
 lights, sensors, etc.
 
+Includes verified **Xiaomi Robot Vacuum X20 Pro (`xiaomi.vacuum.d102gl`) map
+export**: floor plans as PNG/JSON, room geometry and name markers, robot/dock
+positions and recorded cleaning routes. See the [map guide](#x20-pro-maps-room-labels-and-routes)
+for setup, the local viewer and current live-data limitations.
+
 ## Installation
 
 ```bash
@@ -60,7 +65,7 @@ for d in cloud.get_devices():
     print(f"{d['did']}: {d['name']} ({d['model']})")
 
 # Control your vacuum
-vacuum = MiHomeVacuum.from_cloud(cloud, did="1173085625")
+vacuum = MiHomeVacuum.from_cloud(cloud, did="1234567890")
 print(vacuum.status())           # "charging"
 print(vacuum.battery_level())    # 100
 print(vacuum.rooms())            # {"Kitchen": 4, "Living room": 3, ...}
@@ -118,7 +123,7 @@ cloud = MiHomeCloud(...)
 cloud.restore_auth_state(...)
 
 # Auto-detects model and loads the right profile
-vacuum = MiHomeVacuum.from_cloud(cloud, did="1173085625")
+vacuum = MiHomeVacuum.from_cloud(cloud, did="1234567890")
 ```
 
 ### Status & Sensors
@@ -154,7 +159,7 @@ in your Mi Home app. Partial and case-insensitive matching is supported.
 
 ```python
 vacuum.rooms()
-# {"Living room": 3, "Kitchen": 4, "Bryggers": 5, "Stue gang": 6, "Eddies": 7}
+# {"Living room": 3, "Kitchen": 4, "Bedroom": 5}
 ```
 
 ### Consumables
@@ -202,6 +207,196 @@ from mihome_cloud import lookup_fault
 lookup_fault("xiaomi.vacuum.d102gl", 320004)  # "drive_wheel_error"
 lookup_fault("dreame.vacuum.r2205", 15)       # "left_wheel_motor"
 ```
+
+## X20 Pro maps, room labels and routes
+
+`xiaomi.vacuum.d102gl` (Xiaomi Robot Vacuum X20 Pro) supports read-only map
+snapshots through the existing MiHome cloud session. The implementation has been
+verified against real device downloads and does not depend on another vacuum
+integration. Its runtime dependencies remain `requests` and `pycryptodome`.
+
+| Data | Available through the map API |
+| --- | --- |
+| Maps and floors | Active map, saved-map inventory and explicit saved-map downloads. |
+| Floor plan | PNG raster, room boundaries and native coordinates in millimetres. |
+| Room markers | Names, IDs and label positions; unnamed rooms get a display fallback. |
+| Robot and dock | Positions from the downloaded map, with availability and freshness metadata. |
+| Route | Original points and separate transport/cleaning runs, retaining raw `type` values. |
+| Freshness | Fetch time, cache age, content revisions and stale/error flags. |
+
+These are **cloud snapshots**. Position/route changes during an active cleaning,
+upload latency and a five-second refresh cadence still need live verification.
+Fetching a snapshot does not start cleaning, switch floors or request a new map
+upload. The map API never starts a background poller or attempts a new login.
+
+### Model notes: Xiaomi Robot Vacuum X20 Pro
+
+The findings below were verified on the maintainer's **Xiaomi Robot Vacuum X20
+Pro, model `xiaomi.vacuum.d102gl`**. They establish support for this tested device;
+they do not automatically establish support for every Xiaomi/Dreame model or
+firmware version. No firmware modification was required.
+
+- **Map access works.** The active floor plan and multiple saved maps were
+  downloaded, decrypted and exported. The model uses a Xiaomi JSON-v2 map
+  envelope; do not route it through a Dreame map parser merely because the
+  library's cloud transport was originally based on Dreame-project research.
+- **Use the `_pro` URL endpoint.** `/v2/home/get_interim_file_url_pro` returned
+  usable map downloads with the existing session. The non-`_pro` variant returned
+  code `-6` on the tested account.
+- **Room metadata is split across sources.** MIoT `room_info` (SIID 2, PIID 16)
+  has room IDs/names and `map_uid`, but no geometry. The map file supplies
+  `grid_id` → `room_id`, room attributes and label positions. Room IDs matched
+  the cleaning API; some room names were empty, so a room-ID fallback is needed.
+- **Do not assume all map identifiers agree.** `current_map_id` (10/6) was `0`;
+  `room_info.map_uid` did not match saved-map IDs. The downloaded file's `map_id`
+  matched a saved-map entry marked `is_current`. The API uses the file's identity
+  and verifies explicit saved-floor requests against it.
+- **Positions and a recorded route are available.** The map file contains robot
+  and dock coordinates plus `paths.points`. Observed `type=0` runs look like
+  transport; `type=1` runs form the cleaning lanes. These are observed meanings,
+  not a verified manufacturer enum. Breaking the line at every zero incorrectly
+  turns transport runs into isolated points.
+- **Geometry uses a 50 mm grid in the tested files.** The viewer preserves raw
+  route coordinates and uses antialiasing, without smoothing. Robot diameter is
+  350 mm; the manufacturer's dock footprint is 340 × 420 mm. Raw yaw units and
+  the dock's exact coordinate anchor still need verification.
+- **Timestamps and history have limits.** List `index` values resemble Unix
+  timestamps but were not confirmed as map creation/change times. `clean-record`
+  (10/3) returned cleaning summaries; access to older route files remains
+  unverified. The latest recorded route is available for local snapshot export.
+- **Live behavior is the next test.** A moving robot's position updates, an
+  accumulating active route and cloud latency have not yet been measured. The
+  agreed next experiment is a bounded five-second sampling run during a cleaning
+  started by the user—not an automatic cleaning started by this library.
+
+The [investigation notes](docs/x20-pro-maps.md) document endpoints, the decode
+chain and the evidence behind these model-specific decisions. No private map
+files, room names, account identifiers or session credentials are included.
+
+
+### Fetch a snapshot using a saved session
+
+Replace the synthetic device ID below with the DID from your device list and
+use the same region as the Xiaomi Home app:
+
+```python
+import json
+from pathlib import Path
+from mihome_cloud import MiHomeCloud, MiHomeVacuum
+from mihome_cloud.map_view import write_map_view
+
+with MiHomeCloud("", "", country="de") as cloud:
+    cloud.restore_auth_state(json.loads(Path("auth_state.json").read_text()))
+    vacuum = MiHomeVacuum.from_cloud(
+        cloud, did="1234567890", model="xiaomi.vacuum.d102gl"
+    )
+
+    maps = vacuum.maps                  # Reuses one client; no request yet
+    floors = maps.list_maps()           # MapInfo: map_id, name, is_current
+    snapshot = maps.get_snapshot()      # Active map plus available overlays
+    payload = snapshot.to_dict()        # JSON-ready, private home-layout data
+    png = snapshot.png()                # Static raster; overlays are separate
+
+    positions = maps.get_positions()   # robot, dock, map_id, freshness
+    route = maps.get_route()           # route, task_id, map_id, freshness
+
+    Path("private-maps").mkdir(mode=0o700, exist_ok=True)
+    write_map_view(snapshot, "private-maps/view")
+```
+
+Consecutive active getters share a five-second cache. Keep the same client per
+device across consumers. `get_snapshot(map_id=...)` fetches a saved floor without
+changing the active floor; wait for the shared refresh interval before fetching
+a different uncached map. Saved files may omit robot position and route, so
+check their `available` flags. An expired session raises an error or returns an
+explicitly stale cached snapshot; restore a valid session through your existing
+authentication workflow.
+
+`payload["rooms"]` includes each room's `room_id`, `name`, `display_name`,
+`label` position and boundary rings. Vendor label coordinates are used when
+inside the room, otherwise an interior raster cell is selected. Names can be
+empty even when the map contains room geometry. Optional overrides are scoped
+to both map and room to avoid mixing floors:
+
+```python
+from mihome_cloud import VacuumMapClient
+
+# Synthetic map/room IDs; use your own IDs and an already restored cloud client.
+maps = VacuumMapClient(
+    cloud, device_id,
+    min_refresh_interval=5,
+    room_names={7: {11: "Kitchen", 12: "Living room"}},
+)
+```
+
+### Export PNG and JSON from the command line
+
+From a checkout installed with `pip install -e .`:
+
+```sh
+mkdir -m 700 -p private-maps
+python tools/export_x20_map.py \
+  --auth-state auth_state.json \
+  --country de \
+  --output private-maps/export-01
+```
+
+The exporter discovers exactly one X20 Pro. Supply `--device-id` if you have
+multiple matching devices. Add `--all-maps` to also download reported saved
+floors; no map switch is performed. Each run needs a new output directory.
+
+Output includes `active.raw`, decoded `active.json`, `active-geometry.json`,
+`active.png`, private metadata and a manifest. The PNG is the static floor plan;
+room labels, positions and routes are drawn by the browser viewer below.
+
+### View room names, positions and routes in a browser
+
+The Python example above already creates a viewer bundle. Alternatively, build
+one **offline** from an exported JSON file:
+
+```sh
+python tools/preview_x20_map.py \
+  --input private-maps/export-01/active.json \
+  --output private-maps/view
+python -m http.server 8938 --bind 127.0.0.1 --directory private-maps/view
+```
+
+Open [the local viewer](http://127.0.0.1:8938/). It uses Canvas to draw room labels,
+the robot/dock and original route coordinates with antialiasing, without smoothing
+or point markers. Cleaning is solid; optional transport is dashed. These route
+categories reflect observations on X20 Pro; raw numeric types remain available.
+The robot is drawn at its 350 mm diameter; the dock is symbolic because its
+coordinate anchor and rotation are not yet verified.
+
+The viewer checks its **local** `snapshot.json` every five seconds. It does not
+contact Xiaomi. To update it, a backend must fetch a new snapshot through the
+same map client and call `write_map_view()` again. The helper atomically publishes
+JSON and hash-named rasters; the browser reuses an unchanged map image and keeps
+the previous view if loading fails. No CDN, npm build or extra runtime dependency
+is required. Stop the local server with Ctrl+C.
+
+### Refresh behavior and limits
+
+- Five seconds is the default minimum between new snapshot fetches, not a
+  guarantee of fresh measurements from Xiaomi. One active refresh normally
+  performs a property batch, a signed-URL request and a file download.
+- Repeated getters use cached data. Refresh failures back off and retain the
+  previous snapshot with `stale=true`; use `allow_stale=False` to raise instead.
+- `fetched_at` is download time. The robot's measurement time is unknown;
+  `source_updated_at` is null and `live_updates_verified` is false.
+- The newest route can belong to the last completed cleaning. Historical route
+  downloads and automatic end-of-task archiving are not implemented.
+- For a dashboard, keep Xiaomi access on the backend and serve snapshots/images
+  through authenticated endpoints. Stop refreshing when the view is unused and
+  use a slower cadence while idle. `full_state()` polling remains unchanged.
+
+Exports contain private home layouts and must stay out of Git and logs. The
+helpers create private directories/files (0700/0600); `private-maps/` is ignored.
+The local demo binds only to loopback and never receives Xiaomi credentials.
+
+See the [full API and snapshot contract](docs/map-api.md) and the
+[protocol findings and model limitations](docs/x20-pro-maps.md).
+
 
 ## Device Profiles
 
@@ -293,7 +488,8 @@ Device Profile JSON  — Model-specific MIoT mappings (no code changes)
 Persist auth state including `client_id`. The `interactive_login` helper does this automatically.
 
 ### 2FA rate limited
-3-5 attempts per day. Once you have `auth_state.json`, you won't need 2FA again.
+Avoid repeated login attempts. Reuse `auth_state.json` while it remains valid;
+Xiaomi may still require interactive authorization after the session expires.
 
 ### "auth error" or "invalid signature"
 Ensure `ssecurity` and `serviceToken` are from the same login session. Use `interactive_login` — it handles the multi-step redirect chain correctly.

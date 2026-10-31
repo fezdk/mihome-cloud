@@ -34,3 +34,6 @@ dependencies = [
 Homepage = "https://github.com/fezdk/mihome-cloud"
 Repository = "https://github.com/fezdk/mihome-cloud"
 Issues = "https://github.com/fezdk/mihome-cloud/issues"
+
+[tool.setuptools.package-data]
+mihome_cloud = ["profiles/*.json", "resources/*.html"]

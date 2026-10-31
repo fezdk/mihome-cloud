@@ -7,3 +7,6 @@ build/
 .env
 auth_state.json
 DEADJOE
+
+# Private home layouts, metadata and diagnostic exports
+/private-maps/
