@@ -10,6 +10,9 @@ the most recent recorded route have been verified on actual stored device data.
 cloud refresh rate are not yet verified.** Those measurements must wait for a
 cleaning session started by the user. No cleaning was started during development.
 
+For an end-to-end saved-session export with room labels and the recorded route
+drawn on the map, see [Room configuration and route examples](map-examples.md).
+
 ## Public API
 
 ```python
@@ -78,8 +81,9 @@ Use a slower cadence while idle, and stop refreshing when no view needs it.
 | `identity` | Whether the file matches saved-map metadata; never derives floor ID from `room_info.map_uid`. |
 
 Room names come from `room_attrs.room_name`, an explicitly matching `room_info`,
-or a map-scoped caller override. Empty names remain empty in `name`; the viewer
-displays **Rum ID**. Vendor label coordinates are used when inside the room;
+or a map-scoped caller override. Empty names remain empty in `name`;
+`display_name` is `Room <id>` (or `Segment <grid_id>` when no unambiguous room ID
+exists). The Danish demo viewer displays `Rum <id>` or `Segment <grid_id>`. Vendor label coordinates are used when inside the room;
 otherwise an actual interior raster cell nearest the room's cell centroid is
 selected. This avoids placing labels in holes or outside concave rooms.
 
@@ -151,7 +155,7 @@ fonts, npm packages or new runtime dependencies. Its Canvas layers are:
 
 The browser checks **local** `snapshot.json` every five seconds, pauses while
 hidden and never receives Xiaomi credentials or signed URLs. This interval does
-not itself fetch cloud data. A future backend producer calls `get_snapshot()`
+not itself fetch cloud data. A backend producer must call `get_snapshot()`
 and publishes its result. `write_map_view()` atomically replaces the JSON and
 uses hash-named rasters, so a floor change cannot pair new overlays with an old
 image. The viewer also waits for the matching raster before swapping snapshots.
@@ -160,7 +164,8 @@ It retains the previous drawing and shows an error if loading fails.
 The helper manages a new private directory (0700, files 0600) and refuses an
 unmarked existing directory. Exports remain sensitive home-layout data even
 though device/account identifiers and signed URLs are absent. Keep the output
-under ignored `private-maps/` and serve only via loopback or authenticated Mutti.
+under ignored `private-maps/` and serve only via loopback or an authenticated
+application endpoint.
 There is no automatic history capture or deletion of old raster files.
 
 ## Verification and next live experiment

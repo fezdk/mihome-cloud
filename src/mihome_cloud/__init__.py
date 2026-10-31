@@ -1,13 +1,15 @@
 """mihome-cloud — Minimal Xiaomi MiHome cloud client for MIoT devices.
 
-Control any Xiaomi MIoT smart home device via the Xiaomi cloud API.
-Handles SSO authentication, RC4-encrypted RPC, and automatic token refresh.
+Access cloud-supported Xiaomi MIoT properties/actions via the Xiaomi cloud API.
+Includes SSO/session reuse, RC4 RPC, a high-level X20 Pro vacuum API and opt-in
+map snapshots. Map requests never attempt automatic reauthentication.
 
 Usage:
     from mihome_cloud import MiHomeCloud
 
-    cloud = MiHomeCloud("user@example.com", "password", country="de")
-    cloud.login()
+    cloud = MiHomeCloud("", "", country="de")
+    cloud.restore_auth_state(saved_state)
+    # Create saved_state with interactive_login() if no working session exists.
 
     # List devices
     devices = cloud.get_devices()

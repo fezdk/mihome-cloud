@@ -107,21 +107,23 @@ class MiHomeCloud:
     """Xiaomi MiHome cloud client for MIoT device control.
 
     Authenticates via Xiaomi SSO and sends RC4-encrypted RPC calls
-    to the MiHome cloud API. Works with any MIoT-compatible device
-    (vacuums, air purifiers, lights, sensors, etc.).
+    to the MiHome cloud API for cloud-accessible MIoT properties/actions.
+    Device-specific support depends on the model and its cloud API.
 
     Args:
         username: Xiaomi account email or phone number.
         password: Xiaomi account password.
         country: Server region code (e.g. "de", "us", "cn", "sg", "in").
-            Must match the region in your Mi Home app.
+            Region where the devices are registered; supplied by the caller.
+            Not restored from saved auth state or discovered automatically.
         client_id: Optional persistent client ID. Auto-generated if not provided.
-            Persisting this across sessions avoids triggering 2FA repeatedly.
+            Reuse it with saved auth state; Xiaomi may still require CAPTCHA/2FA.
 
     Example::
 
-        cloud = MiHomeCloud("user@example.com", "password", country="de")
-        cloud.login()
+        cloud = MiHomeCloud("", "", country="de")
+        cloud.restore_auth_state(saved_state)
+        # For initial CAPTCHA/2FA login, create saved_state with interactive_login().
 
         # List all devices
         for device in cloud.get_devices():
@@ -163,7 +165,7 @@ class MiHomeCloud:
 
     @property
     def is_logged_in(self) -> bool:
-        """Whether the client has a valid service token."""
+        """Whether a service token is loaded; does not check server validity."""
         return self._service_token is not None
 
     @property
@@ -189,8 +191,10 @@ class MiHomeCloud:
     def restore_auth_state(self, state: dict[str, Any]) -> None:
         """Restore auth state from a previous session.
 
-        If the token has expired, the next RPC call will automatically
-        trigger re-authentication.
+        Does not validate the session or restore the server region. Regular RPC
+        calls may renew a rejected session or attempt login when no pass_token
+        exists; map reads disable that behavior. Reuse a working session before
+        requesting a new interactive login.
         """
         self._user_id = state.get("user_id") or None
         self._ssecurity = state.get("ssecurity") or None
@@ -338,11 +342,11 @@ class MiHomeCloud:
 
         if "notificationUrl" in data:
             raise RuntimeError(
-                "2FA required. Approve the login in your Mi Home app, "
-                "then call login() again within 60 seconds."
+                "2FA required. Use interactive_login() to complete verification, "
+                "then restore the returned auth state."
             )
         if "captchaUrl" in data:
-            raise RuntimeError("CAPTCHA required. Try again later.")
+            raise RuntimeError("CAPTCHA required. Use interactive_login(), then restore the returned auth state.")
 
         location = data.get("location")
         self._user_id = str(data.get("userId", ""))
@@ -368,7 +372,7 @@ class MiHomeCloud:
              allow_reauth: bool = True) -> dict:
         """Send an RC4-encrypted RPC request to the MiHome API."""
         if not self._service_token or not self._ssecurity:
-            raise RuntimeError("Not logged in. Call login() first.")
+            raise RuntimeError("No service session loaded. Restore saved auth state or use interactive_login().")
 
         nonce = _generate_nonce()
         snonce = _signed_nonce(self._ssecurity, nonce)
@@ -398,7 +402,7 @@ class MiHomeCloud:
 
         if resp.status_code == 401 or "SERVICETOKEN_EXPIRED" in resp.text:
             if not allow_reauth:
-                raise RuntimeError("Xiaomi rejected the renewed service token; existing session retained.")
+                raise RuntimeError("Xiaomi rejected the service session; automatic reauthentication is disabled.")
             if retried:
                 raise RuntimeError("Xiaomi cloud rejected the renewed session; manual re-authentication required.")
             logger.info("MiHome cloud: service session rejected, renewing")
@@ -433,8 +437,9 @@ class MiHomeCloud:
 
         Args:
             device_id: The device DID.
-            props: List of (service_id, property_id) tuples. Find these
-                in the MIoT spec for your device at https://home.miot-spec.com.
+            props: List of (service_id, property_id) tuples. For supported
+                profiles, use MiHomeDevice.get_property() by semantic name.
+                For another model, tools/generate_profile.py fetches spec IDs.
 
         Returns:
             Dict mapping (siid, piid) -> value for each property that returned data.

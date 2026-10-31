@@ -1,153 +1,58 @@
-# mihome-cloud Device Abstraction Plan
+# Implementation status and architecture
 
-## Goal
+The original device-abstraction plan has been implemented. This file now records
+current boundaries; use the [README](README.md) for runnable examples and the
+[profile reference](docs/PROFILES.md) for extending property/action support.
 
-Replace magic numbers and model-specific code with a profile-driven, layered
-abstraction that works across all MIoT devices — vacuums, air purifiers,
-lights, sensors, etc.
+## Current components
 
-## Architecture (4 layers)
+| Component | Responsibility |
+| --- | --- |
+| `client.py` / `MiHomeCloud` | Xiaomi SSO/session reuse and RC4 cloud RPC; device discovery and raw properties/actions. |
+| `auth.py` | Interactive CAPTCHA/2FA flow and private saved-session persistence. |
+| `device.py` / `MiHomeDevice` | Semantic property/action access, available names and capability declarations. |
+| `capabilities.py` | Battery, consumables, named rooms, station actions and fault helpers. |
+| `devices/vacuum.py` / `MiHomeVacuum` | Vacuum commands, status, normalized polling state and an opt-in map client. |
+| `profiles/` | Model-specific property/action IDs, status labels, value maps and scaling. |
+| `maps.py` / `map_api.py` | Verified X20 Pro map decoder and cached JSON-ready snapshots. |
+| `map_view.py` / `resources/map_view.html` | Private viewer bundle and Canvas map with room labels, positions and route. |
+| `tools/` | Draft profile generation, one-shot map export and offline viewer generation. |
 
-```
-Layer 4: Profile JSON          ← Model-specific MIoT mappings (no code)
-Layer 3: Device Type Classes   ← High-level API per type (MiHomeVacuum, etc.)
-Layer 2: Capability Mixins     ← Reusable across types (Battery, Rooms, etc.)
-Layer 1: MiHomeDevice          ← Generic property/action access via profile
-Layer 0: MiHomeCloud           ← Raw RPC (already exists, unchanged)
-```
+The bundled device class/profile covers **Xiaomi Robot Vacuum X20 Pro
+(`xiaomi.vacuum.d102gl`)**. Other cloud-accessible MIoT devices can use raw RPC
+or `MiHomeDevice` with a custom profile; dedicated air-purifier/light classes
+are not implemented. Capability declarations do not dynamically attach mixins.
 
-## File Structure
+## Discovery and profiles
 
-```
-src/mihome_cloud/
-  client.py              # Layer 0: MiHomeCloud raw RPC (existing)
-  auth.py                # Authentication (existing)
-  fault_codes.py         # Fault code lookup (existing)
+- `cloud.get_devices()` supplies device IDs, names and model strings.
+- `MiHomeVacuum.from_cloud(cloud, did=...)` discovers the model when omitted.
+- `load_profile()` tries the exact model, then existing prefix profile files.
+  It raises `FileNotFoundError` if none exists; there is no universal fallback.
+- Pass a profile dict explicitly with `from_cloud(..., profile=profile)` or the
+  device constructor. There is no automatic user-config directory lookup.
+- `tools/generate_profile.py` fetches the MIoT specification and generates a
+  draft. Semantic names, status classifications, scaling and value maps need
+  review before use. A new profile does not implement a new map protocol.
 
-  device.py              # Layer 1: MiHomeDevice base class
-  capabilities.py        # Layer 2: Capability mixins
+## Map support and remaining work
 
-  devices/
-    __init__.py
-    vacuum.py            # Layer 3: MiHomeVacuum
+Active/saved map downloads, PNG/JSON export, raster-derived room boundaries,
+name markers, robot/dock positions and the latest recorded route are implemented.
+See the [complete room-and-route example](docs/map-examples.md) and
+[snapshot contract](docs/map-api.md).
 
-  profiles/
-    __init__.py           # Profile loader + auto-detection
-    xiaomi.vacuum.d102gl.json
-```
+Normal `full_state()` polling does not download maps. Applications explicitly
+refresh one shared `vacuum.maps` client and publish its output to their viewers.
+The viewer polls local JSON; it never contacts Xiaomi.
 
-## Layer 1: MiHomeDevice (base)
+Still unverified or unimplemented:
 
-Generic device that reads a profile to know its properties and actions.
-
-```python
-class MiHomeDevice:
-    cloud: MiHomeCloud
-    did: str
-    model: str
-    profile: dict
-
-    def get_property(name) -> Any        # Read by semantic name
-    def get_properties(names) -> dict    # Batch read
-    def set_property(name, value)        # Write by semantic name
-    def run_action(name, params) -> dict # Execute by semantic name
-    def has_capability(name) -> bool     # Check capability
-    def available_actions -> list[str]
-    def available_properties -> list[str]
-    def map_value(prop, raw) -> str      # Translate raw → human-readable
-```
-
-No MIoT siid/piid/aiid numbers anywhere — all resolved from profile.
-
-## Layer 2: Capability Mixins
-
-Reusable building blocks, each providing a few methods:
-
-- **BatteryMixin**: `battery_level()`, `is_charging()`
-- **ConsumablesMixin**: `consumables() -> dict[str, int]`
-- **RoomsMixin**: `rooms() -> dict[str, int]`, room name resolution
-- **StationMixin**: `wash_mop()`, `dry_mop()`, `empty_bin()`
-- **FaultMixin**: `fault() -> str|None`, `has_fault()`, `has_interrupted_task()`
-
-A vacuum uses all of these. An air purifier uses Battery + Consumables.
-A light might use none.
-
-## Layer 3: Device Type Classes
-
-Combine base + mixins + type-specific high-level methods:
-
-### MiHomeVacuum
-```python
-class MiHomeVacuum(MiHomeDevice, BatteryMixin, ConsumablesMixin,
-                    RoomsMixin, StationMixin, FaultMixin):
-    def status() -> str
-    def is_busy() -> bool
-    def start()
-    def stop()
-    def pause()
-    def resume()
-    def dock()
-    def locate()
-    def clean_rooms(room_names: list[str])
-    def full_state() -> dict      # Everything for a poll
-```
-
-### Future: MiHomeAirPurifier, MiHomeLight, etc.
-
-## Layer 4: Profile JSON
-
-All model-specific knowledge in one file:
-
-```json
-{
-  "model": "xiaomi.vacuum.d102gl",
-  "device_type": "vacuum",
-  "capabilities": ["battery", "consumables", "rooms", "mop", "station", "fault"],
-  "properties": { ... siid/piid mappings ... },
-  "actions": { ... siid/aiid mappings ... },
-  "consumable_properties": ["main_brush_life", ...],
-  "status_map": { "1": "idle", "2": "charging", ... },
-  "value_maps": { "fan_speed": {"1": "silent", ...} },
-  "active_statuses": [4, 7, 12, 14, 16, 17],
-  "area_divisor": 100
-}
-```
-
-### Profile loading
-- Auto-detect from `model` string returned by `get_devices()`
-- Fall back to generic profile if no exact match
-- Users can provide custom profiles in their config
-
-## What changes for consumers
-
-### Before (raw)
-```python
-cloud.get_properties(did, [(2, 2), (3, 1)])
-cloud.action(did, siid=2, aiid=16, params=[[4]])
-```
-
-### After (abstracted)
-```python
-vacuum = MiHomeVacuum.from_cloud(cloud, did="1173085625")
-print(vacuum.status())        # "charging"
-print(vacuum.battery_level())  # 100
-vacuum.clean_rooms(["kitchen", "living-room"])
-```
-
-## What stays the same
-
-- MiHomeCloud (Layer 0) — unchanged, still available for raw access
-- Authentication (auth.py) — unchanged
-- fault_codes.py — unchanged, used by FaultMixin
-
-## Implementation order
-
-1. Write `device.py` (MiHomeDevice base)
-2. Write `capabilities.py` (all mixins)
-3. Write `devices/vacuum.py` (MiHomeVacuum)
-4. Write `profiles/__init__.py` (loader)
-5. Create `profiles/xiaomi.vacuum.d102gl.json`
-6. Update `__init__.py` exports
-7. Update README with new API
-8. Test with mutti's vacuum
-9. Convert mutti's xiaomi-vacuum connector to use MiHomeVacuum
+- Position and route changes during active cleaning, cloud upload latency and
+  the suitability of five-second sampling. Measure during a user-started run.
+- Historical-route downloads and automatic completion-time archiving.
+- Raw yaw interpretation, dock coordinate anchor and semantic wall/furniture
+  separation. Raster room contours retain their cell-scale steps.
+- Map decoders for models other than `xiaomi.vacuum.d102gl`.
+- Map integration into Mutti. This repository provides the reusable client and
+  viewer; it does not deploy or configure consuming applications.

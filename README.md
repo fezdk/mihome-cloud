@@ -3,8 +3,9 @@
 Control Xiaomi MIoT smart home devices via the Xiaomi cloud API.
 
 Provides both a **high-level device API** (profile-driven, no magic numbers)
-and **low-level raw access** for any MIoT device — vacuums, air purifiers,
-lights, sensors, etc.
+and **low-level raw access** for cloud-accessible MIoT devices. The bundled
+high-level device class and verified profile currently cover the X20 Pro vacuum;
+other device types can use raw RPC or caller-supplied profiles.
 
 Includes verified **Xiaomi Robot Vacuum X20 Pro (`xiaomi.vacuum.d102gl`) map
 export**: floor plans as PNG/JSON, room geometry and name markers, robot/dock
@@ -56,33 +57,45 @@ login later.
 import json
 from mihome_cloud import MiHomeCloud, MiHomeVacuum
 
-# Load saved auth
-cloud = MiHomeCloud("user@example.com", "password", country="de")
-cloud.restore_auth_state(json.load(open("auth_state.json")))
+# Reuse saved auth; no password is needed while the session works.
+cloud = MiHomeCloud("", "", country="de")
+with open("auth_state.json") as f:
+    cloud.restore_auth_state(json.load(f))
 
-# Find your devices
-for d in cloud.get_devices():
+# Discover device IDs, names and model codes from the cloud.
+devices = cloud.get_devices()
+for d in devices:
     print(f"{d['did']}: {d['name']} ({d['model']})")
 
-# Control your vacuum
-vacuum = MiHomeVacuum.from_cloud(cloud, did="1234567890")
+# Select the X20 Pro; if there are several, select a DID from devices above.
+matches = [d for d in devices if d.get("model") == "xiaomi.vacuum.d102gl"]
+if len(matches) != 1:
+    raise ValueError("Select one vacuum from the discovered device list")
+device = matches[0]
+vacuum = MiHomeVacuum.from_cloud(cloud, did=device["did"], model=device["model"])
 print(vacuum.status())           # "charging"
 print(vacuum.battery_level())    # 100
-print(vacuum.rooms())            # {"Kitchen": 4, "Living room": 3, ...}
-vacuum.clean_rooms(["kitchen"])
+print(vacuum.rooms())            # Available named rooms: {name: id}
+cloud.close()
 ```
 
 ## Authentication Details
 
 ### Notes
-- Xiaomi rate-limits 2FA to 3-5 requests per day — don't retry excessively
+
+- Xiaomi can rate-limit verification attempts; no fixed daily quota is assumed.
 - The state includes `pass_token` and `session_refreshed_at` after a new login.
   Older four-field state files still load, but cannot use account-session renewal.
-- `refresh_if_due()` renews a session after 30 days by default. A failed
-  scheduled attempt can be retried after one hour; callers may continue using
-  the current service session while it still works. A rejected service request
-  tries account-session renewal once, then falls back to one password login if
-  needed. A second rejection requires manual action.
+- Calling `refresh_if_due()` renews an eligible session after 30 days by
+  default; there is no background renewal timer. A failed attempt backs off
+  for one hour. The existing service session is retained if renewal fails.
+- On HTTP 401 or `SERVICETOKEN_EXPIRED`, regular cloud requests try account-session
+  renewal when a `pass_token` exists; otherwise they attempt `login()` using the
+  configured username/password. Failed renewal does not fall back to a password
+  login. A rejected retry or a required CAPTCHA/2FA needs caller intervention.
+  Map requests disable automatic reauthentication.
+- Renewal changes the in-memory state. Persist `cloud.get_auth_state()` privately
+  after renewal if the replacement session should survive a process restart.
 - Renewal is not guaranteed forever: Xiaomi can invalidate the account session
   or require CAPTCHA/2FA. Never print or commit the saved state.
 
@@ -92,13 +105,18 @@ vacuum.clean_rooms(["kitchen"])
 import json
 from mihome_cloud import MiHomeCloud
 
-cloud = MiHomeCloud("user@example.com", "password", country="de")
+cloud = MiHomeCloud("", "", country="de")
 with open("auth_state.json") as f:
     cloud.restore_auth_state(json.load(f))
 # No login() needed while the account session remains valid.
 ```
 
 ### Server Regions
+
+Set `country` to the region where the devices are registered. It is caller
+configuration: saved auth state does not contain the region, and the client does
+not search regions automatically. `get_devices()` lists devices in the selected
+region; their `did`, `name` and `model` need no manual lookup.
 
 | Region | Code |
 |--------|------|
@@ -111,8 +129,9 @@ with open("auth_state.json") as f:
 
 ## Vacuum Control
 
-The `MiHomeVacuum` class provides a clean API for robot vacuums. All
-MIoT-specific details are resolved from a device profile — no magic numbers.
+The `MiHomeVacuum` class provides a high-level API for robot vacuums.
+Property/action IDs are resolved from a device profile. X20 Pro map decoding
+uses a separate model-specific implementation, exposed through `vacuum.maps`.
 
 ### Setup
 
@@ -133,15 +152,16 @@ vacuum.status()           # "charging", "sweeping_mopping", "paused", etc.
 vacuum.status_code()      # Raw numeric code
 vacuum.battery_level()    # 0-100
 vacuum.is_charging()      # True/False
-vacuum.is_busy()          # True if actively cleaning
+vacuum.is_busy()          # Profile busy states, including washing/station work
 vacuum.fault()            # "drive_wheel_error" or None
-vacuum.has_fault()        # True/False
+vacuum.has_fault()        # Nonzero raw code; can be residual after recovery
+vacuum.has_active_fault() # Nonzero code plus an error-capable device status
 ```
 
 ### Cleaning
 
 ```python
-vacuum.start()                          # Start sweep + mop
+vacuum.start()                          # Sweep + mop, or best available action
 vacuum.start_sweep()                    # Sweep only (no mop)
 vacuum.start_mop()                      # Mop only
 vacuum.clean_rooms(["kitchen", "bedroom"])  # Clean specific rooms by name
@@ -152,15 +172,35 @@ vacuum.dock()                           # Return to base
 vacuum.locate()                         # Play sound to find it
 ```
 
-Room names are resolved from the vacuum's map — use the names you see
-in your Mi Home app. Partial and case-insensitive matching is supported.
+Read the available names and IDs with `vacuum.rooms()` before selecting rooms.
+Name matching is case-insensitive and accepts spaces/hyphens and substrings.
+Prefer full names or IDs: a partial match selects the first match and does not
+reject ambiguity. Numeric IDs are passed through without validation.
 
 ### Rooms
 
 ```python
-vacuum.rooms()
-# {"Living room": 3, "Kitchen": 4, "Bedroom": 5}
+rooms = vacuum.rooms()
+# Example result: {"Living room": 3, "Kitchen": 4, "Bedroom": 5}
+
+# Inspect the full property, including unnamed rooms and map_uid.
+import json
+raw = vacuum.get_property("room_info")
+room_info = json.loads(raw) if isinstance(raw, str) else (raw or {})
+room_entries = room_info.get("rooms", [])  # [{"id": ..., "name": ...}, ...]
 ```
+
+`rooms()` reads the `room_info` property and includes only named rooms; duplicate
+names collapse to one dict entry. It does not download a map or synthesize names.
+An empty dict therefore does not prove the robot has no rooms. Use the raw list
+above for all reported IDs, or `vacuum.maps.get_snapshot().to_dict()["rooms"]`
+for X20 Pro geometry, names and display-label fallbacks.
+
+`clean_rooms()` also accepts integer IDs from the current room configuration,
+for example `vacuum.clean_rooms([4])`. IDs belong to a floor: do not send IDs
+from another saved floor, and do not treat a display fallback such as `Room 4`
+as a resolvable room name. See the [room-and-route example](docs/map-examples.md)
+for a complete read-only export and drawing.
 
 ### Consumables
 
@@ -194,10 +234,15 @@ else:
 
 ```python
 state = vacuum.full_state()
-# Returns a flat dict with all status, consumables, rooms, faults:
+# Returns available profile properties, including status and named rooms:
 # {"status": "charging", "battery": 100, "charging": True,
 #  "rooms/kitchen": 4, "consumables/filter_life": 54, ...}
 ```
+
+`full_state()` batches the profile properties and normalizes available values;
+it does not include map geometry, positions or routes. Fetch those explicitly
+through `vacuum.maps`. `fault_code_raw` can retain a previous fault; use
+`fault_active` to distinguish an active fault from residual telemetry.
 
 ### Fault Codes
 
@@ -276,8 +321,10 @@ files, room names, account identifiers or session credentials are included.
 
 ### Fetch a snapshot using a saved session
 
-Replace the synthetic device ID below with the DID from your device list and
-use the same region as the Xiaomi Home app:
+Use a DID and model returned by `cloud.get_devices()` (the example DID is
+synthetic), and the same configured `country` as your working cloud connection.
+The [complete room-and-route example](docs/map-examples.md) discovers the X20 Pro
+automatically when there is exactly one matching device:
 
 ```python
 import json
@@ -411,7 +458,8 @@ Profiles are auto-loaded by model string.
 
 ### Adding a New Model
 
-Create a JSON file in `src/mihome_cloud/profiles/`:
+Create a reviewed JSON file in `src/mihome_cloud/profiles/`. This abbreviated
+shape is illustrative; its IDs and declared capabilities must match the device:
 
 ```json
 {
@@ -420,21 +468,23 @@ Create a JSON file in `src/mihome_cloud/profiles/`:
   "capabilities": ["battery", "consumables", "rooms", "station", "fault"],
   "properties": {
     "status":  {"siid": 2, "piid": 2},
-    "battery": {"siid": 3, "piid": 1},
-    ...
+    "battery": {"siid": 3, "piid": 1}
   },
   "actions": {
     "start_sweep_mop": {"siid": 2, "aiid": 6},
-    "stop":            {"siid": 2, "aiid": 2},
-    ...
+    "stop":            {"siid": 2, "aiid": 2}
   },
-  "status_map": {"1": "idle", "2": "charging", ...},
-  "value_maps": {"fan_speed": {"1": "silent", "2": "basic", ...}},
+  "status_map": {"1": "idle", "2": "charging"},
+  "value_maps": {"fan_speed": {"1": "silent", "2": "basic"}},
   "active_statuses": [4, 7, 12, 14, 16, 17]
 }
 ```
 
-Find your device's MIoT IDs at [home.miot-spec.com](https://home.miot-spec.com).
+The [profile generator](docs/PROFILES.md#generating-a-profile) can fetch the MIoT
+specification using the model returned by `cloud.get_devices()`. Review its draft
+before use. See the [profile reference](docs/PROFILES.md) for loading a custom
+profile and checking available properties/actions. A profile alone does not add
+a map decoder for another model.
 
 ## Low-Level Access
 
@@ -477,15 +527,17 @@ MiHomeDevice         — Profile-driven property/action access by name
   ↓
 Capability Mixins    — Battery, Consumables, Rooms, Station, Fault
   ↓
-MiHomeVacuum         — High-level vacuum API (start, stop, clean_rooms)
-  ↓
-Device Profile JSON  — Model-specific MIoT mappings (no code changes)
+MiHomeVacuum         — High-level vacuum API, backed by Device Profile JSON
+  └─ .maps           — Opt-in X20 Pro snapshots (VacuumMapClient)
+                       Xiaomi map decoder → JSON/PNG → local Canvas viewer
 ```
 
 ## Troubleshooting
 
 ### CAPTCHA on every login
-Persist auth state including `client_id`. The `interactive_login` helper does this automatically.
+Persist the state returned by `interactive_login`, including `client_id`. Pass
+`save_to="auth_state.json"` to save it atomically with private permissions. Reuse
+that state instead of logging in on every run; Xiaomi may still request CAPTCHA.
 
 ### 2FA rate limited
 Avoid repeated login attempts. Reuse `auth_state.json` while it remains valid;
@@ -496,11 +548,18 @@ Ensure `ssecurity` and `serviceToken` are from the same login session. Use `inte
 
 ### No profile for my device
 Use the low-level `cloud.get_properties()` / `cloud.action()` API directly.
-To add a profile, find your device's MIoT spec at [home.miot-spec.com](https://home.miot-spec.com).
+Use `tools/generate_profile.py` with the discovered model to create a draft;
+see [Device Profile Reference](docs/PROFILES.md). Profile loading does not
+automatically generate a profile for unknown models.
 
 ## Credits
 
-Cloud protocol extracted from [Tasshack/dreame-vacuum](https://github.com/Tasshack/dreame-vacuum).
+Cloud transport is based on [Tasshack/dreame-vacuum](https://github.com/Tasshack/dreame-vacuum)
+research; authentication is adapted from
+[PiotrMachowski/Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor).
+The independent X20 Pro decoder uses the documented Xiaomi JSON protocol; see
+[map protocol references](docs/x20-pro-maps.md#references-and-evidence-boundaries).
+These projects are references, not runtime dependencies.
 
 ## License
 

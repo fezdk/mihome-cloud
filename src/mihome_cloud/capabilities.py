@@ -45,9 +45,11 @@ class RoomsMixin:
     """Devices that understand room maps (vacuums, etc.)."""
 
     def rooms(self) -> dict[str, int]:
-        """Get room name → ID mapping from the device's map.
+        """Read named rooms from the room_info property as {room_name: room_id}.
 
-        Returns a dict of {room_name: room_id}. Only named rooms are included.
+        Unnamed rooms are omitted; duplicate names collapse to one entry.
+        Read get_property("room_info") for the complete property. This method
+        does not download map geometry or generate display names.
         """
         raw = self.get_property("room_info")
         if not raw:
@@ -66,8 +68,11 @@ class RoomsMixin:
     def resolve_room_ids(self, room_names: list[str]) -> list[int]:
         """Resolve room names (or IDs) to numeric IDs.
 
-        Accepts exact names, slugified names, partial matches, and raw int IDs.
-        Raises ValueError if a room can't be resolved.
+        Reads available names via rooms(). Matching is case-insensitive and
+        accepts spaces/hyphens and substrings; the first partial match wins.
+        Integer IDs pass through without validation. Display-only labels from
+        map snapshots are not automatically resolvable names.
+        Raises ValueError if a name cannot be resolved.
         """
         all_rooms = self.rooms()
         # Build slug → id lookup

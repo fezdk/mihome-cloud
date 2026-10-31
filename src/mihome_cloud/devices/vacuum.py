@@ -1,7 +1,8 @@
 """High-level vacuum device class.
 
 Provides a clean API for robot vacuums — status, cleaning, room control,
-consumables, fault handling. All MIoT-specific details resolved via profile.
+consumables and fault handling, with property/action IDs resolved via profile.
+The opt-in maps property provides a separate model-specific X20 Pro map client.
 
 Usage::
 
@@ -116,10 +117,12 @@ class MiHomeVacuum(MiHomeDevice, BatteryMixin, ConsumablesMixin,
         return self.run_action("locate")
 
     def clean_rooms(self, room_names: list[str]) -> dict:
-        """Clean specific rooms by name.
+        """Clean specific rooms by discovered name or integer ID.
 
-        Room names are resolved to IDs via the device's room map.
-        Accepts exact names, slugified names, or partial matches.
+        rooms() reads named entries from room_info. Name matching is
+        case-insensitive, accepts spaces/hyphens and uses the first substring
+        match. Integer IDs pass through without validation; choose IDs from
+        the current floor. Map display labels are not name-resolution aliases.
         """
         ids = self.resolve_room_ids(room_names)
         return self.run_action("clean_rooms", [ids])
@@ -129,7 +132,9 @@ class MiHomeVacuum(MiHomeDevice, BatteryMixin, ConsumablesMixin,
     def check_before_command(self) -> str | None:
         """Check if the vacuum is ready for a new cleaning command.
 
-        Returns None if ready, or an error message explaining why not.
+        Returns a warning for a reported busy/interrupted state. None means
+        no warning, including when telemetry could not be read; it is not
+        proof that the vacuum is ready.
         """
         try:
             props = self.get_properties(["status", "fault", "cleaning_area"])
@@ -162,10 +167,12 @@ class MiHomeVacuum(MiHomeDevice, BatteryMixin, ConsumablesMixin,
     # ── Full state for polling ──
 
     def full_state(self) -> dict[str, Any]:
-        """Get the complete device state for a poll cycle.
+        """Read and normalize available profile properties for a poll cycle.
 
         Returns a flat dict suitable for a state store. Property values
-        are mapped to human-readable strings where profile defines mappings.
+        are mapped to human-readable strings where the profile defines mappings.
+        Room entries include named rooms only. Geometry, map-derived positions
+        and routes require an explicit maps.get_snapshot() call.
         """
         result: dict[str, Any] = {}
 

@@ -2,16 +2,18 @@
 """Generate a device profile from the MIoT spec.
 
 Fetches the MIoT specification for a device model and creates a draft
-profile JSON with the correct siid/piid/aiid mappings. Status maps and
-value maps need manual filling based on testing.
+profile JSON with specification IDs and heuristic semantic names. Status
+value-lists populate status_map when present; names and state classifications
+need review, and value_maps need filling based on device testing.
 
 Usage:
     python tools/generate_profile.py xiaomi.vacuum.d102gl
     python tools/generate_profile.py dreame.vacuum.r2205 --output profiles/
-    python tools/generate_profile.py --list vacuum     # List all vacuum models
+    python tools/generate_profile.py --list vacuum     # List spec models, not verified support
 
 The generated profile is a starting point — test it against real hardware
-and fill in the status_map, value_maps, and active_statuses fields.
+and review status_map, value_maps, active_statuses, error_statuses and scaling.
+Write drafts outside the bundled profiles directory to preserve reviewed profiles.
 """
 
 from __future__ import annotations
