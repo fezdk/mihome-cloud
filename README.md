@@ -269,8 +269,10 @@ integration. Its runtime dependencies remain `requests` and `pycryptodome`.
 | Route | Original points and separate transport/cleaning runs, retaining raw `type` values. |
 | Freshness | Fetch time, cache age, content revisions and stale/error flags. |
 
-These are **cloud snapshots**. Position/route changes during an active cleaning,
-upload latency and a five-second refresh cadence still need live verification.
+These are **cloud snapshots**. Changing robot positions and the active route were
+verified during a user-started X20 Pro cleaning, including updates after the
+official app was closed. Use a ten-second refresh interval for a dashboard.
+Exact measurement age and device-to-cloud latency remain unknown.
 Fetching a snapshot does not start cleaning, switch floors or request a new map
 upload. The map API never starts a background poller or attempts a new login.
 
@@ -309,10 +311,11 @@ firmware version. No firmware modification was required.
   timestamps but were not confirmed as map creation/change times. `clean-record`
   (10/3) returned cleaning summaries; access to older route files remains
   unverified. The latest recorded route is available for local snapshot export.
-- **Live behavior is the next test.** A moving robot's position updates, an
-  accumulating active route and cloud latency have not yet been measured. The
-  agreed next experiment is a bounded five-second sampling run during a cleaning
-  started by the user—not an automatic cleaning started by this library.
+- **Active routes and positions are verified.** Read-only sampling during a
+  user-started cleaning observed changing positions and routes, including after
+  closing Xiaomi Home. Replace the whole route on each update: earlier endpoints
+  can be revised. A ten-second client interval is suitable for the tested run;
+  it is not a guaranteed upload cadence or latency bound.
 
 The [investigation notes](docs/x20-pro-maps.md) document endpoints, the decode
 chain and the evidence behind these model-specific decisions. No private map
@@ -430,7 +433,8 @@ is required. Stop the local server with Ctrl+C.
 - Repeated getters use cached data. Refresh failures back off and retain the
   previous snapshot with `stale=true`; use `allow_stale=False` to raise instead.
 - `fetched_at` is download time. The robot's measurement time is unknown;
-  `source_updated_at` is null and `live_updates_verified` is false.
+  `source_updated_at` is null. `live_updates_verified=true` records model-level
+  testing, not proof that an individual snapshot is current.
 - The newest route can belong to the last completed cleaning. Historical route
   downloads and automatic end-of-task archiving are not implemented.
 - For a dashboard, keep Xiaomi access on the backend and serve snapshots/images
@@ -564,3 +568,12 @@ These projects are references, not runtime dependencies.
 ## License
 
 MIT
+
+## X20 Pro cleaning plans
+
+`vacuum.cleaning` reuses the existing MiHome client and session. It reads available
+settings, applies an explicit plan with readback, and exposes pause/resume/stop/dock.
+The map reader stays read-only. See the [cleaning API guide](docs/cleaning-api.md)
+for examples, property mappings, persistent settings and uncertain command outcomes.
+The new four-mode plan flow is tested with mocked cloud transport; it has not yet
+been exercised as a physical start for every mode.

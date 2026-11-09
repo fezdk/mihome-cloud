@@ -198,7 +198,7 @@ def build_map_snapshot(data: dict, *, name: str = "", room_info: dict | None = N
                              "served_at": _utc(), "source_updated_at": None,
                              "content_changed_at": None, "age_seconds": None,
                              "cache_hit": False, "stale": False, "error": None,
-                             "live_updates_verified": False},
+                             "live_updates_verified": True},
                "identity": {"room_info_map_uid_matches": geom["room_info_comparison"]["map_uid_matches_map_id"],
                             "saved_map_match": None}}
     return MapSnapshot(payload, png)

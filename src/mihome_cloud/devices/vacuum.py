@@ -58,6 +58,14 @@ class MiHomeVacuum(MiHomeDevice, BatteryMixin, ConsumablesMixin,
             self._map_client = VacuumMapClient(self.cloud, self.did, self.model)
         return self._map_client
 
+    @property
+    def cleaning(self):
+        """Explicit X20 Pro settings/commands; construction performs no requests."""
+        from mihome_cloud.cleaning import X20CleaningClient
+        if not hasattr(self, "_cleaning_client"):
+            self._cleaning_client = X20CleaningClient(self.cloud, self.did, self.model)
+        return self._cleaning_client
+
     def status(self) -> str:
         """Current status as a human-readable string (e.g. 'charging', 'sweeping_mopping')."""
         code = self.get_property("status")

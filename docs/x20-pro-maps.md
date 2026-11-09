@@ -6,7 +6,8 @@ decoded and exported successfully. No firmware, robot settings, maps or cleaning
 tasks were changed. This document contains protocol findings, not private maps.
 
 For the usable library interface and local viewer, see [map-api.md](map-api.md).
-Live updates during cleaning and their latency remain unverified.
+Changing positions and the active route were subsequently verified during a
+user-started cleaning; exact latency remains unknown. See [live observations](map-api.md#verification-and-observed-live-behavior).
 
 ## What is available
 
@@ -111,7 +112,7 @@ dock **340 × 420 × 563 mm**. The viewer draws a scale-correct robot circle but
 uses a symbolic dock because its anchor and yaw interpretation are unresolved.
 [Xiaomi specifications](https://www.mi.com/se/product/xiaomi-robot-vacuum-x20-pro/specs/)
 
-## History and future live measurement
+## History and live measurement
 
 `clean-record` (10/3) returned totals and a `history_list` of cleaning summaries.
 Each entry contained `stime` and an underscore-separated numeric `label`; there
@@ -128,14 +129,14 @@ assumed compatible or called on this model.
 
 Local end-of-task archiving is a possible fallback: retain the map, route, raw
 blob, map/task IDs and fetch time after a verified task completion. A dock visit
-for mop washing must not be mistaken for task completion. This archiving and
-Mutti integration are not implemented yet.
+for mop washing must not be mistaken for task completion. Automatic archiving is not implemented. Mutti now has a separate interactive
+map/control panel; it does not archive completed tasks.
 
-The next experiment is a bounded five-second sample series during a cleaning
-started by the user. Compare position, pose/task IDs, route and file revisions,
-and request duration. This will test changing data and upload cadence; precise
-latency still needs a device timestamp or simultaneous observation. No automatic
-cleaning was started to perform these checks.
+A read-only sample series during a user-started cleaning has now demonstrated
+changing robot positions and an active route, including updates after Xiaomi Home
+was closed. See the [measurement summary](map-api.md#verification-and-observed-live-behavior).
+No cleaning was started by the experiment. A ten-second client interval is the
+current dashboard choice; source measurement timestamps remain unknown.
 
 ## References and evidence boundaries
 

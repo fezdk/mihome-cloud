@@ -61,7 +61,7 @@ def test_snapshot_labels_coordinates_and_positions():
     assert p["dock"]["position"] == {"x": 0, "y": 0}
     assert p["dock"]["anchor_verified"] is False
     assert p["freshness"]["source_updated_at"] is None
-    assert p["freshness"]["live_updates_verified"] is False
+    assert p["freshness"]["live_updates_verified"] is True
     assert "Test room" not in repr(s)
     json.dumps(p, allow_nan=False)
 

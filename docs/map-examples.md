@@ -104,8 +104,9 @@ route = snapshot.to_dict()["route"]
 
 Serve `private-maps/library-view` on loopback as above. Reuse `vacuum.maps` for
 later refreshes; publishing a new snapshot updates the local view on its next
-five-second check. Cloud upload cadence during active cleaning is still
-unverified; see the [snapshot contract and refresh limits](map-api.md).
+five-second check. For ongoing cloud reads, use a ten-second interval. Changing
+positions/routes were observed during cleaning; exact upload cadence remains
+unknown. See the [snapshot contract and refresh limits](map-api.md).
 
 ## Named, unnamed and saved-floor rooms
 

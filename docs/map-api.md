@@ -114,7 +114,8 @@ separator. `route.available=false` differs from an available empty route.
 On a successful unchanged fetch, `fetched_at` advances but `content_changed_at`
 does not. `content_changed_at` is when THIS client first observed this content,
 not a robot event timestamp. `source_updated_at` is currently **null**, and
-`live_updates_verified` is **false**. A recently fetched cloud file may still be
+`live_updates_verified` is **true**, recording the tested X20 Pro model capability,
+not the freshness of this particular file. A recently fetched cloud file may still be
 an old snapshot; fetch age cannot establish measurement age.
 
 After an error, `get_snapshot()` can return cached data with `stale=true`,
@@ -168,11 +169,11 @@ under ignored `private-maps/` and serve only via loopback or an authenticated
 application endpoint.
 There is no automatic history capture or deletion of old raster files.
 
-## Verification and next live experiment
+## Verification and observed live behavior
 
 Verified in the development checkout:
 
-- **61 Python tests**: existing behavior, raw-format parsing, room identity and
+- **Python tests**: existing behavior, raw-format parsing, room identity and
   label placement, preserved route runs, static/dynamic hashes, cached getters,
   stale data/backoff, saved-floor mismatch, no implicit polling, private output.
 - Previously downloaded active and saved maps normalize successfully, preserving
@@ -192,16 +193,20 @@ Chromium with a new profile and debugging on loopback port 9347, and run
 `PYTHONPATH=src python tests/browser_map_view.py`. Do not attach to a personal
 browser profile. Screenshot outputs are `/tmp/mihome-view-{desktop,mobile}.png`.
 
-When the user next starts cleaning, collect a bounded series of snapshots at
-five-second intervals. Compare position, pose ID, task ID, route count/revision,
-file hash and request duration while retaining timestamps. This can establish
-whether the source changes during a run, how often it uploads, whether paths
-are cumulative, and whether routing survives task transitions. It cannot by
-itself establish exact device-to-cloud latency without a device timestamp or
-simultaneous observation. Nothing in this change starts that experiment.
+A bounded read-only experiment during a user-started cleaning observed 131
+samples and 41 distinct downloaded files. Position and route changed during the
+run; the active route grew from 2 to 272 points. Updates continued after the
+official app was closed. Client pauses were first five seconds, then ten seconds;
+the median observed changed-file interval was about 10.8 seconds. Median complete
+read durations in the three series were about 0.7–0.9 seconds. These measurements
+are client observations, not exact upload cadence or end-to-end latency.
 
-Later Mutti integration needs one shared map client on the backend, authenticated
-snapshot/image endpoints (or SSE/WebSocket pushes), and the Canvas renderer.
-Only the backend contacts Xiaomi. The browser can redraw smoothly while waiting
-for real samples, but should not invent robot movement between stale samples.
-No Mutti integration or production deployment is part of this change.
+Earlier route endpoints sometimes changed: replace each route snapshot instead
+of appending only new points. Data stayed unchanged during a mop-wash pause.
+A long session that never opens Xiaomi Home, firmware/region differences and
+precise device timestamps remain untested.
+
+Mutti's separate integration uses one shared backend reader, authenticated
+snapshot/image endpoints and a browser SVG renderer, refreshing every ten seconds
+while visible. Only the backend contacts Xiaomi. The renderer does not invent
+movement between samples. Deploying Mutti is separate from updating this library.
