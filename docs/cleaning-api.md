@@ -63,7 +63,7 @@ means the command was accepted, not that cleaning completed. Reads/writes on thi
 client use `allow_reauth=False`; ordinary session recovery belongs to the host.
 
 A read-only probe against the tested X20 Pro returned recognized values for all
-eight exposed settings. The transport contract and all four modes are tested
+seven exposed settings. The transport contract and all four modes are tested
 with synthetic cloud responses. **The new plan flow has not been physically tested for every mode or
 setting combination.** Actual map downloads, active routes/positions and prior
 room cleaning are separate device evidence. Historical routes, map switching,
