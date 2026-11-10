@@ -204,8 +204,19 @@ receive a successful acknowledgement without starting the robot. This wire
 format follows the [X20 Pro protocol investigation](https://github.com/AldenDana/ha-xiaomi-vacuum-x20pro/blob/master/docs/METHOD.md)
 and MIoT input property 2/15. An acknowledgement is still not proof of movement;
 check subsequent robot status. Never automatically retry an ambiguous start.
-The corrected tagged format has synthetic wire-contract coverage; physical
-execution on our test robot remains to be confirmed.
+The tagged format has synthetic wire-contract coverage and a verified
+operator-triggered two-room vacuum-and-mop start with 0.4.3: the active task
+matched the selected rooms, mop preparation began, and the robot then entered
+Cleaning with the station idle. This does not
+verify every setting combination or explain all earlier unsuccessful attempts.
+See [cleaning verification](docs/cleaning-api.md#room-start-wire-format-and-verification-status).
+
+With **0.4.4**, `vacuum.cleaning.read()` also exposes observed station operation
+and `controls.can_start` / `controls.can_end_drying`. Drying can allow a new
+cleaning, while mop washing cannot. Use the explicit
+`vacuum.cleaning.command('end_drying')` to request Stop Dry; the normal `stop`
+command is Stop Sweeping. These new controls have synthetic regression coverage;
+physical start-from-drying and explicit end-drying tests remain outstanding.
 
 `clean_rooms()` also accepts integer IDs from the current room configuration,
 for example `vacuum.clean_rooms([4])`. IDs belong to a floor: do not send IDs

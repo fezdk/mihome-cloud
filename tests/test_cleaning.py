@@ -151,3 +151,49 @@ def test_start_diagnostics_preserve_only_stage_and_numeric_error_code(client, ou
 def test_error_diagnostics_discard_non_numeric_provider_codes():
     error = CleaningError('cloud_rejected', stage='action', api_code='PRIVATE_PAYLOAD')
     assert error.api_code is None
+
+
+def test_start_during_drying_does_not_send_hidden_stop(client):
+    c, cloud = client
+    cloud.values.update({(2,2):14, (2,18):'{"mode":1,"runtime":0}'})
+    state = c.read()
+    assert state['controls'] == {'can_start':True, 'can_end_drying':True}
+    assert state['telemetry']['station_operation'] == 'drying'
+    cloud.calls.clear()
+    c.start({'mode':'vacuum_mop'}, [4])
+    assert [x['method'] for x in cloud.calls] == ['get_properties','set_properties','get_properties','action']
+    assert cloud.calls[-1]['params']['aiid'] == 16
+
+
+@pytest.mark.parametrize('raw', [None, '', 'not JSON', '{}', '[]', '{"mode":true}', '{"mode":"1"}', '{"mode":2}', '{"mode":3}', '{"mode":99}'])
+def test_unknown_or_washing_station_cannot_unlock_start(client, raw):
+    c, cloud = client;cloud.values.update({(2,2):14, (2,18):raw})
+    assert c.read()['controls'] == {'can_start':False, 'can_end_drying':False}
+    with pytest.raises(CleaningError, match='robot_not_idle'):c.start({'mode':'vacuum'}, [4])
+    assert all(x['method']=='get_properties' for x in cloud.calls)
+
+
+def test_drying_change_during_settings_prevents_start(client):
+    c, cloud = client;cloud.values.update({(2,2):14, (2,18):'{"mode":1}'})
+    original = cloud._rpc
+    def change(url, body, **kwargs):
+        result = original(url, body, **kwargs)
+        if body['method']=='set_properties':cloud.values[(2,18)]='{"mode":3}'
+        return result
+    cloud._rpc=change
+    with pytest.raises(CleaningError, match='settings_applied_robot_changed'):c.start({'mode':'vacuum'}, [4])
+    assert all(x['method']!='action' for x in cloud.calls)
+
+
+def test_end_drying_uses_its_own_action_once(client):
+    c, cloud = client;cloud.values.update({(2,2):14, (2,18):'{"mode":1}'})
+    guard=Mock();c.command('end_drying', before_write=guard)
+    assert [x['method'] for x in cloud.calls]==['get_properties','action']
+    assert cloud.calls[-1]['params']=={'did':'2.32','siid':2,'aiid':32,'in':[]}
+    guard.assert_called_once()
+
+
+def test_end_drying_is_not_a_general_stop(client):
+    c, cloud=client;cloud.values.update({(2,2):4, (2,18):'{"mode":0}'})
+    with pytest.raises(CleaningError, match='station_not_drying'):c.command('end_drying')
+    assert all(x['method']=='get_properties' for x in cloud.calls)

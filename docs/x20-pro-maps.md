@@ -152,3 +152,9 @@ for dimensions, room-ID joins, closed-ring areas and snapshot normalization.
 No credentials, actual device identifiers, room names, coordinates, maps or
 route samples are included in commits. See [map-api.md](map-api.md) for test and
 browser verification details.
+
+## Station activity follow-up
+
+See [station-mode evidence and the next measurement plan](x20-pro-station-observations.md)
+for candidate drying/washing/dust-collection modes and a focused, read-only
+capture of water-handling phases during the next user-started cleaning.

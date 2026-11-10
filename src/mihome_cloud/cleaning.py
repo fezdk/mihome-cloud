@@ -5,6 +5,8 @@ Settings persist on the device. A multi-property write is not a transaction.
 """
 from __future__ import annotations
 
+import json
+
 from .maps import MODEL
 
 # name: (SIID, PIID, raw -> semantic value)
@@ -19,7 +21,7 @@ SETTINGS = {
 }
 TELEMETRY = {'status': (2, 2), 'fault': (2, 3), 'battery': (3, 1),
              'area': (2, 6), 'time': (2, 7), 'mode': (2, 4), 'scope': (2, 5)}
-COMMANDS = {'pause': (2, 7), 'resume': (2, 8), 'stop': (2, 2), 'dock': (3, 1)}
+COMMANDS = {'pause': (2, 7), 'resume': (2, 8), 'stop': (2, 2), 'dock': (3, 1), 'end_drying': (2, 32)}
 
 
 class CleaningError(ValueError):
@@ -29,6 +31,30 @@ class CleaningError(ValueError):
         super().__init__(reason)
         self.stage = stage if stage in {'get_properties', 'set_properties', 'action', 'start_guard'} else None
         self.api_code = api_code if type(api_code) is int else None
+
+
+def station_telemetry(raw):
+    """Observed d102gl modes only; malformed/unknown data never means idle."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            raw = None
+    mode = raw.get('mode') if isinstance(raw, dict) else None
+    if type(mode) is not int:
+        mode = None
+    return {'station_mode': mode,
+            'station_operation': {0: 'idle', 1: 'drying', 3: 'washing_mops'}.get(mode)}
+
+
+def is_drying(telemetry):
+    return (type(telemetry.get('status')) is int and telemetry['status'] == 14
+            and type(telemetry.get('station_mode')) is int and telemetry['station_mode'] == 1)
+
+
+def can_start_cleaning(telemetry):
+    return ((type(telemetry.get('status')) is int and telemetry['status'] in (1, 2, 9))
+            or is_drying(telemetry))
 
 
 def encode_room_ids(room_ids: list[int]) -> str:
@@ -73,7 +99,7 @@ class X20CleaningClient:
         return result.get('result')
 
     def read(self):
-        pairs = sorted({v[:2] for v in SETTINGS.values()} | set(TELEMETRY.values()))
+        pairs = sorted({v[:2] for v in SETTINGS.values()} | set(TELEMETRY.values()) | {(2, 18)})
         result = self._rpc('get_properties', [dict(did=f'{s}.{p}', siid=s, piid=p) for s,p in pairs])
         if not isinstance(result, list):
             raise CleaningError('invalid_telemetry')
@@ -86,7 +112,11 @@ class X20CleaningClient:
             available = type(raw) is int and raw in choices
             options[name] = {'available': available, 'choices': list(choices.values()) if available else [],
                              'value': choices.get(raw) if available else None}
-        return {'options': options, 'telemetry': {name: values.get(pair) for name,pair in TELEMETRY.items()}}
+        telemetry = {name: values.get(pair) for name,pair in TELEMETRY.items()}
+        telemetry.update(station_telemetry(values.get((2, 18))))
+        return {'options': options, 'telemetry': telemetry,
+                'controls': {'can_start': can_start_cleaning(telemetry),
+                             'can_end_drying': is_drying(telemetry)}}
 
     def _action(self, siid, aiid, params, before_write):
         if before_write: before_write()
@@ -99,6 +129,8 @@ class X20CleaningClient:
     def command(self, command, *, before_write=None):
         if command not in COMMANDS:
             raise CleaningError('invalid_command')
+        if command == 'end_drying' and not is_drying(self.read()['telemetry']):
+            raise CleaningError('station_not_drying')
         return self._action(*COMMANDS[command], [], before_write)
 
     def start(self, settings: dict[str, str], room_ids: list[int] | None = None, *, before_write=None):
@@ -116,7 +148,7 @@ class X20CleaningClient:
             raise CleaningError('invalid_settings')
         room_inputs = room_action_inputs(room_ids) if room_ids is not None else []
         current = self.read()
-        if type(current['telemetry']['status']) is not int or current['telemetry']['status'] not in (1, 2, 9):
+        if not can_start_cleaning(current['telemetry']):
             raise CleaningError('robot_not_idle')
         if any(not current['options'][key]['available'] for key in settings):
             raise CleaningError('setting_unavailable')
@@ -142,7 +174,7 @@ class X20CleaningClient:
             raise CleaningError('settings_not_confirmed', stage='get_properties')
         if room_ids is None and verified['telemetry']['scope'] != 1:
             raise CleaningError('settings_not_confirmed', stage='get_properties')
-        if type(verified['telemetry']['status']) is not int or verified['telemetry']['status'] not in (1,2,9):
+        if not can_start_cleaning(verified['telemetry']):
             raise CleaningError('settings_applied_robot_changed')
         # Generic start honours the selected program; start_sweep_mop would select a mode.
         try:

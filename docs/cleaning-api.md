@@ -2,7 +2,7 @@
 
 `MiHomeVacuum.cleaning` is an opt-in `X20CleaningClient` for
 `xiaomi.vacuum.d102gl`. It uses the existing `MiHomeCloud` connection directly,
-without another vacuum dependency or login mechanism. Requires mihome-cloud 0.4.3 for diagnostic error attributes.
+without another vacuum dependency or login mechanism. Requires mihome-cloud 0.4.4 for station-aware start and drying controls.
 
 ```python
 # vacuum is an existing authenticated MiHomeVacuum instance.
@@ -48,7 +48,7 @@ vacuum.cleaning.command('pause')   # also resume, stop, dock
 
 The client uses `get_properties`, `set_properties` and `action` through
 `/v2/home/rpc/{did}`. A start checks idle/charging status, validates the complete
-plan, writes settings once, checks all acknowledgements and reads values back
+plan (idle/charging or observed status 14 with station mode 1), writes settings once, checks all acknowledgements and reads values back
 before issuing one start action. Whole-home plans also set/read back sweep scope
 2/5 to Global (1). The start actions are 2/1 (generic whole-home start) and 2/16
 (selected rooms, input property 15 tagged with a CSV string, such as
@@ -84,11 +84,58 @@ The high-level Home Assistant cloud action service accepts a bare CSV string;
 that service uses `/miotspec/action`, whereas this client uses the direct RPC.
 These are different transport contracts.
 
-Physical execution of this flow is **not yet verified on our test robot**.
+A user-triggered production run with 0.4.3 **confirmed a two-room vacuum-and-mop
+start**: the receipt was accepted, `current_cleaning_config` (2/40) contained
+exactly the selected room IDs with `clean_mode:3`, counters reset, and status
+changed from Charging (2) to GoWash (7). The operator simultaneously saw
+"Cleaning the mop" in Xiaomi Home; station JSON reported `mode:3`. The robot subsequently reported Cleaning (4), station mode reset to 0, and the
+operator saw "Cleaning" in the app. This verifies room-plan acceptance and entry
+into cleaning, not every setting combination or eventual task completion. See [station observations](x20-pro-station-observations.md).
+
 Earlier nested-array and untagged-CSV attempts returned acknowledgements without
-observed movement. A tagged-input attempt ended with an unknown outcome after
-settings changed; no successful start was observed. Version 0.4.3 adds stage and
-numeric error diagnostics so the next operator-triggered attempt can identify
-whether settings, readback or the action failed. It does not change the command
-sequence or replay failed commands. The reference's separate room-configuration
-action (2/13) is not implemented by this cleaning-plan API.
+observed movement. An earlier tagged-input attempt ended with an unknown outcome
+after settings changed. Its exact failure stage was not retained, so the cause
+remains unknown. Version 0.4.3 adds stage/numeric error diagnostics; it did not
+change the 0.4.2 command sequence. Do not attribute success to diagnostics or claim
+that tagged inputs alone explain every earlier failure. The successful run used
+one explicit operator Start, no automatic retry, and no separate room-configuration
+action (2/13).
+
+Pause (2/7) was subsequently verified through Mutti: the command receipt was
+accepted, the operator observed the robot stop, Xiaomi Home showed "Pausing",
+and repeated reads returned status 5 with station mode 0 and unchanged cleaning
+counters. Resume (2/8) was then verified with an accepted receipt and a 5→4 transition.
+The active room/mode configuration and accumulated counters were retained,
+consistent with continuing the paused task. Stop-and-return and return-for-mop-wash
+remain distinct actions requiring their own physical verification.
+
+Dock (3/1), invoked once via Mutti during the resumed run, was accepted and
+produced status 6 (Returning), followed by status 14 with station mode 3 while
+the operator saw "Cleaning the mop". The active room selection was cleared
+from 2/40 during return. This differs from the automatic in-task wash return
+(status 20, then 7, with the room selection retained). Do not present this
+`dock` command as a temporary return-for-mop-wash action. Action 2/36 (`Back Mop
+Wash`) is listed separately in the model specification and has not been tested
+or added to this API.
+
+
+### Drying and starting another cleaning (0.4.4)
+
+`read()` includes `telemetry.station_mode`, `telemetry.station_operation`, and
+`controls.can_start` / `controls.can_end_drying`. The model-specific observed
+modes are 0 idle, 1 drying and 3 washing mops; mode 2 and other values remain
+unknown. Main status still matters: status 7 is preparation/in-task washing,
+while status 14 with mode 3 was observed after a manual task-ending return.
+
+Start accepts idle/charging (1/2/9) and **status 14 + station mode 1** (drying).
+It revalidates after applying settings. Missing, malformed or unknown station
+data cannot unlock a status-14 start, and washing stays blocked. The operator
+reported that Xiaomi Home permits a new cleaning while drying. This admission
+rule has synthetic coverage; an actual start from drying through this updated
+API is still to be verified. Start sends no implicit stop-drying command.
+
+`vacuum.cleaning.command('end_drying')` invokes **2/32 Stop Dry**, after a fresh
+read confirms drying. It does not use **2/2 Stop Sweeping**. The wire contract is
+tested; physical end-drying behavior awaits a separate operator-triggered test.
+Readiness while drying does not mean the robot is currently cleaning, and the
+selected cleaning program must not be used as its activity label.
