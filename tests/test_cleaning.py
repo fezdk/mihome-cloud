@@ -44,7 +44,7 @@ def test_modes_readback_before_one_start(client,mode,raw):
     c.start({'mode':mode,'passes':'twice'},[3,6])
     assert cloud.values[(2,4)]==raw
     assert [r['method'] for r in cloud.calls]==['get_properties','set_properties','get_properties','action']
-    assert cloud.calls[-1]['params']=={'did':'2.16','siid':2,'aiid':16,'in':[[3,6]]}
+    assert cloud.calls[-1]['params']=={'did':'2.16','siid':2,'aiid':16,'in':['3,6']}
 
 def test_whole_home_uses_generic_start(client):
     c,cloud=client;c.start({'mode':'vacuum_then_mop'})
@@ -84,3 +84,26 @@ def test_revoked_after_settings_reports_partial_effects(client):
         c.start({'mode':'mop'}, before_write=guard)
     assert cloud.values[(2,4)] == 2
     assert all(call['method'] != 'action' for call in cloud.calls)
+
+
+@pytest.mark.parametrize('rooms,expected', [([4], '4'), ([6,3], '6,3')])
+def test_x20_room_input_is_one_csv_string(client, rooms, expected):
+    c, cloud = client
+    c.start({'mode':'vacuum_mop'}, rooms)
+    action = cloud.calls[-1]
+    assert action['method'] == 'action'
+    assert action['params']['in'] == [expected]
+    assert len([call for call in cloud.calls if call['method']=='action']) == 1
+
+
+def test_legacy_x20_rooms_use_same_wire_format():
+    from mihome_cloud import MiHomeVacuum
+    vacuum = MiHomeVacuum(Mock(), '1234567890', 'xiaomi.vacuum.d102gl', {})
+    vacuum.rooms = Mock(return_value={})
+    vacuum.run_action = Mock()
+    vacuum.clean_rooms([4,6])
+    vacuum.run_action.assert_called_once_with('clean_rooms', ['4,6'])
+    vacuum.run_action.reset_mock()
+    with pytest.raises(CleaningError):
+        vacuum.clean_rooms([])
+    vacuum.run_action.assert_not_called()

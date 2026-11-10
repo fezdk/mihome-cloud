@@ -26,6 +26,19 @@ class CleaningError(ValueError):
     """Payload-free, stable reason; never includes provider responses."""
 
 
+def encode_room_ids(room_ids: list[int]) -> str:
+    """d102gl action 2/16 takes one CSV string (MIoT input property 2/15).
+
+    Nested arrays can receive code 0 without causing any cleaning. Empty input
+    must never be treated as a whole-home request.
+    """
+    if (not isinstance(room_ids, list) or not 1 <= len(room_ids) <= 64
+            or any(type(r) is not int or r <= 0 for r in room_ids)
+            or len(set(room_ids)) != len(room_ids)):
+        raise CleaningError('invalid_rooms')
+    return ','.join(str(r) for r in room_ids)
+
+
 class X20CleaningClient:
     def __init__(self, cloud, device_id: str, model: str = MODEL):
         if model != MODEL or not str(device_id).isdigit():
@@ -84,9 +97,7 @@ class X20CleaningClient:
             for name,value in settings.items()
         ):
             raise CleaningError('invalid_settings')
-        if room_ids is not None and (not isinstance(room_ids, list) or not 1 <= len(room_ids) <= 64
-            or any(type(r) is not int or r <= 0 for r in room_ids) or len(set(room_ids)) != len(room_ids)):
-            raise CleaningError('invalid_rooms')
+        room_param = encode_room_ids(room_ids) if room_ids is not None else None
         current = self.read()
         if type(current['telemetry']['status']) is not int or current['telemetry']['status'] not in (1, 2, 9):
             raise CleaningError('robot_not_idle')
@@ -117,7 +128,7 @@ class X20CleaningClient:
         # Generic start honours the selected program; start_sweep_mop would select a mode.
         try:
             return self._action(2, 16 if room_ids is not None else 1,
-                                [room_ids] if room_ids is not None else [], before_write)
+                                [room_param] if room_param is not None else [], before_write)
         except Exception:
             # Settings already changed; even a revoked guard is not a no-effect rejection.
             raise CleaningError('settings_applied_start_not_confirmed') from None

@@ -51,7 +51,7 @@ The client uses `get_properties`, `set_properties` and `action` through
 plan, writes settings once, checks all acknowledgements and reads values back
 before issuing one start action. Whole-home plans also set/read back sweep scope
 2/5 to Global (1). The start actions are 2/1 (generic whole-home start) and 2/16
-(selected rooms, input `[room_ids]`). Pause/resume/stop are 2/7, 2/8, 2/2; dock is
+(selected rooms, one CSV string input such as `["4"]` or `["4,6"]`). Pause/resume/stop are 2/7, 2/8, 2/2; dock is
 3/1. `before_write=` optionally revalidates caller authorization before each write.
 
 Settings persist on the robot. Applying them is not transactional: a rejected
@@ -70,3 +70,14 @@ room cleaning are separate device evidence. Historical routes, map switching,
 carpet rules, schedules and station-maintenance settings are outside this API.
 
 Source: [Xiaomi MIoT specification for d102gl](https://miot-spec.org/miot-spec-v2/instance?type=urn:miot-spec-v2:device:vacuum:0000A006:xiaomi-d102gl:1).
+
+### Room-start wire format (0.4.1 correction)
+
+X20 Pro input property 2/15 is a string. Send action 2/16 with
+`in: ["4,6"]`, not `in: [[4,6]]`. An actual UI attempt using the nested array
+received a successful acknowledgement while subsequent reads stayed Charging
+with station mode 0. Acknowledgement does not establish physical execution.
+The CSV format is also used by the model-specific
+[X20 Pro integration](https://github.com/AldenDana/ha-xiaomi-vacuum-x20pro/blob/master/custom_components/xiaomi_x20pro/__init__.py).
+Both `vacuum.cleaning.start(..., room_ids=[...])` and legacy `clean_rooms()`
+now encode this correctly for d102gl. No failed command is replayed automatically.

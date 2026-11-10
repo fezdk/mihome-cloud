@@ -133,6 +133,9 @@ class MiHomeVacuum(MiHomeDevice, BatteryMixin, ConsumablesMixin,
         the current floor. Map display labels are not name-resolution aliases.
         """
         ids = self.resolve_room_ids(room_names)
+        if self.model == "xiaomi.vacuum.d102gl":
+            from mihome_cloud.cleaning import encode_room_ids
+            return self.run_action("clean_rooms", [encode_room_ids(ids)])
         return self.run_action("clean_rooms", [ids])
 
     # ── Pre-command safety check ──
