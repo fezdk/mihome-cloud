@@ -23,7 +23,12 @@ COMMANDS = {'pause': (2, 7), 'resume': (2, 8), 'stop': (2, 2), 'dock': (3, 1)}
 
 
 class CleaningError(ValueError):
-    """Payload-free, stable reason; never includes provider responses."""
+    """Payload-free reason and optional protocol diagnostics; no provider bodies."""
+
+    def __init__(self, reason, *, stage=None, api_code=None):
+        super().__init__(reason)
+        self.stage = stage if stage in {'get_properties', 'set_properties', 'action', 'start_guard'} else None
+        self.api_code = api_code if type(api_code) is int else None
 
 
 def encode_room_ids(room_ids: list[int]) -> str:
@@ -61,9 +66,10 @@ class X20CleaningClient:
             result = self.cloud._rpc(self.cloud._base_url + '/v2/home/rpc/' + self.did,
                                      {'method': method, 'params': params}, allow_reauth=False)
         except Exception:
-            raise CleaningError('cloud_outcome_unknown') from None
+            raise CleaningError('cloud_outcome_unknown', stage=method) from None
         if not isinstance(result, dict) or result.get('code') != 0:
-            raise CleaningError('cloud_rejected')
+            raise CleaningError('cloud_rejected', stage=method,
+                                api_code=result.get('code') if isinstance(result, dict) else None)
         return result.get('result')
 
     def read(self):
@@ -86,7 +92,8 @@ class X20CleaningClient:
         if before_write: before_write()
         result = self._rpc('action', {'did': f'{siid}.{aiid}', 'siid': siid, 'aiid': aiid, 'in': params})
         if not isinstance(result, dict) or result.get('code') != 0:
-            raise CleaningError('action_rejected')
+            raise CleaningError('action_rejected', stage='action',
+                                api_code=result.get('code') if isinstance(result, dict) else None)
         return {'status': 'ok'}
 
     def command(self, command, *, before_write=None):
@@ -124,21 +131,25 @@ class X20CleaningClient:
         if before_write: before_write()
         result = self._rpc('set_properties', params)
         if not isinstance(result, list) or len(result) != len(params):
-            raise CleaningError('settings_partially_applied')
+            raise CleaningError('settings_partially_applied', stage='set_properties')
         acknowledgements = {(v.get('siid'),v.get('piid')):v.get('code') for v in result if isinstance(v,dict)}
-        if any(acknowledgements.get((v['siid'],v['piid'])) != 0 for v in params):
-            raise CleaningError('settings_partially_applied')
+        failed = [acknowledgements.get((v['siid'],v['piid'])) for v in params
+                  if acknowledgements.get((v['siid'],v['piid'])) != 0]
+        if failed:
+            raise CleaningError('settings_partially_applied', stage='set_properties', api_code=failed[0])
         verified = self.read()
         if any(verified['options'][key]['value'] != value for key,value in settings.items()):
-            raise CleaningError('settings_not_confirmed')
+            raise CleaningError('settings_not_confirmed', stage='get_properties')
         if room_ids is None and verified['telemetry']['scope'] != 1:
-            raise CleaningError('settings_not_confirmed')
+            raise CleaningError('settings_not_confirmed', stage='get_properties')
         if type(verified['telemetry']['status']) is not int or verified['telemetry']['status'] not in (1,2,9):
             raise CleaningError('settings_applied_robot_changed')
         # Generic start honours the selected program; start_sweep_mop would select a mode.
         try:
             return self._action(2, 16 if room_ids is not None else 1,
                                 room_inputs, before_write)
-        except Exception:
+        except Exception as exc:
             # Settings already changed; even a revoked guard is not a no-effect rejection.
-            raise CleaningError('settings_applied_start_not_confirmed') from None
+            raise CleaningError('settings_applied_start_not_confirmed',
+                                stage=exc.stage if isinstance(exc, CleaningError) else 'start_guard',
+                                api_code=exc.api_code if isinstance(exc, CleaningError) else None) from None

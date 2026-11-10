@@ -126,3 +126,28 @@ def test_legacy_room_payload_reaches_rpc_with_tagged_string():
         'did':'2.16', 'siid':2, 'aiid':16,
         'in':[{'piid':15, 'value':'4'}]}}
     assert cloud._rpc.call_count == 1
+
+
+@pytest.mark.parametrize('outer', [False, True])
+def test_start_diagnostics_preserve_only_stage_and_numeric_error_code(client, outer):
+    c, cloud = client
+    original = cloud._rpc
+    def fail_action(url, body, **kwargs):
+        if body['method'] == 'action':
+            cloud.calls.append(body)
+            error = {'code': -704030001, 'message': 'PRIVATE_DEVICE_PAYLOAD'}
+            return error if outer else {'code': 0, 'result': error}
+        return original(url, body, **kwargs)
+    cloud._rpc = fail_action
+    with pytest.raises(CleaningError) as caught:
+        c.start({'mode': 'vacuum_mop'}, [3,4])
+    error = caught.value
+    assert str(error) == 'settings_applied_start_not_confirmed'
+    assert error.stage == 'action' and error.api_code == -704030001
+    assert 'PRIVATE' not in repr(error) and 'PRIVATE' not in repr(vars(error))
+    assert sum(call['method'] == 'action' for call in cloud.calls) == 1
+
+
+def test_error_diagnostics_discard_non_numeric_provider_codes():
+    error = CleaningError('cloud_rejected', stage='action', api_code='PRIVATE_PAYLOAD')
+    assert error.api_code is None

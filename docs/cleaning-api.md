@@ -2,7 +2,7 @@
 
 `MiHomeVacuum.cleaning` is an opt-in `X20CleaningClient` for
 `xiaomi.vacuum.d102gl`. It uses the existing `MiHomeCloud` connection directly,
-without another vacuum dependency or login mechanism. Requires mihome-cloud 0.4.0.
+without another vacuum dependency or login mechanism. Requires mihome-cloud 0.4.3 for diagnostic error attributes.
 
 ```python
 # vacuum is an existing authenticated MiHomeVacuum instance.
@@ -51,12 +51,16 @@ The client uses `get_properties`, `set_properties` and `action` through
 plan, writes settings once, checks all acknowledgements and reads values back
 before issuing one start action. Whole-home plans also set/read back sweep scope
 2/5 to Global (1). The start actions are 2/1 (generic whole-home start) and 2/16
-(selected rooms, one CSV string input such as `["4"]` or `["4,6"]`). Pause/resume/stop are 2/7, 2/8, 2/2; dock is
+(selected rooms, input property 15 tagged with a CSV string, such as
+`[{"piid":15,"value":"4,6"}]`). Pause/resume/stop are 2/7, 2/8, 2/2; dock is
 3/1. `before_write=` optionally revalidates caller authorization before each write.
 
 Settings persist on the robot. Applying them is not transactional: a rejected
 batch, readback failure, revoked authorization or failed start can leave some
-settings changed. `CleaningError` contains a payload-free reason. Do not retry
+settings changed. `CleaningError` contains a payload-free reason, an optional `stage`
+(`get_properties`, `set_properties`, `action`, `start_guard`) and a numeric
+`api_code` when the provider returned one. These diagnostics never include raw
+responses, device identifiers, selected rooms or credentials. Do not retry
 writes automatically, including on a timeout, lost response or expired session.
 Read status and ask the operator to assess the outcome. Successful acknowledgement
 means the command was accepted, not that cleaning completed. Reads/writes on this
@@ -71,13 +75,20 @@ carpet rules, schedules and station-maintenance settings are outside this API.
 
 Source: [Xiaomi MIoT specification for d102gl](https://miot-spec.org/miot-spec-v2/instance?type=urn:miot-spec-v2:device:vacuum:0000A006:xiaomi-d102gl:1).
 
-### Room-start wire format (0.4.1 correction)
+### Room-start wire format and verification status
 
-X20 Pro input property 2/15 is a string. Send action 2/16 with
-`in: ["4,6"]`, not `in: [[4,6]]`. An actual UI attempt using the nested array
-received a successful acknowledgement while subsequent reads stayed Charging
-with station mode 0. Acknowledgement does not establish physical execution.
-The CSV format is also used by the model-specific
-[X20 Pro integration](https://github.com/AldenDana/ha-xiaomi-vacuum-x20pro/blob/master/custom_components/xiaomi_x20pro/__init__.py).
-Both `vacuum.cleaning.start(..., room_ids=[...])` and legacy `clean_rooms()`
-now encode this correctly for d102gl. No failed command is replayed automatically.
+X20 Pro input property 2/15 is a string. The direct device RPC currently sends
+`in: [{"piid":15,"value":"4,6"}]` (since 0.4.2), following the tagged-input
+finding in the [X20 Pro protocol investigation](https://github.com/AldenDana/ha-xiaomi-vacuum-x20pro/blob/master/docs/METHOD.md).
+The high-level Home Assistant cloud action service accepts a bare CSV string;
+that service uses `/miotspec/action`, whereas this client uses the direct RPC.
+These are different transport contracts.
+
+Physical execution of this flow is **not yet verified on our test robot**.
+Earlier nested-array and untagged-CSV attempts returned acknowledgements without
+observed movement. A tagged-input attempt ended with an unknown outcome after
+settings changed; no successful start was observed. Version 0.4.3 adds stage and
+numeric error diagnostics so the next operator-triggered attempt can identify
+whether settings, readback or the action failed. It does not change the command
+sequence or replay failed commands. The reference's separate room-configuration
+action (2/13) is not implemented by this cleaning-plan API.
