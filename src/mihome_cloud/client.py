@@ -502,7 +502,8 @@ class MiHomeCloud:
             cloud.action("12345", siid=2, aiid=1)
 
             # Clean specific rooms (siid=2, aiid=16)
-            cloud.action("12345", siid=2, aiid=16, params=["1,2,3"])
+            cloud.action("12345", siid=2, aiid=16,
+                         params=[{"piid": 15, "value": "1,2,3"}])
         """
         data = {
             "did": f"{siid}.{aiid}",

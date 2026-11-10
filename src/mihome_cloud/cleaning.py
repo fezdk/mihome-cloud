@@ -39,6 +39,16 @@ def encode_room_ids(room_ids: list[int]) -> str:
     return ','.join(str(r) for r in room_ids)
 
 
+def room_action_inputs(room_ids: list[int]) -> list[dict]:
+    """RPC action inputs must identify the spec's string property 2/15.
+
+    A bare CSV string is the high-level /miotspec/action convention. This
+    library uses /v2/home/rpc/{did}, which forwards the device wire payload.
+    d102gl can acknowledge untagged inputs without executing the action.
+    """
+    return [{'piid': 15, 'value': encode_room_ids(room_ids)}]
+
+
 class X20CleaningClient:
     def __init__(self, cloud, device_id: str, model: str = MODEL):
         if model != MODEL or not str(device_id).isdigit():
@@ -97,7 +107,7 @@ class X20CleaningClient:
             for name,value in settings.items()
         ):
             raise CleaningError('invalid_settings')
-        room_param = encode_room_ids(room_ids) if room_ids is not None else None
+        room_inputs = room_action_inputs(room_ids) if room_ids is not None else []
         current = self.read()
         if type(current['telemetry']['status']) is not int or current['telemetry']['status'] not in (1, 2, 9):
             raise CleaningError('robot_not_idle')
@@ -128,7 +138,7 @@ class X20CleaningClient:
         # Generic start honours the selected program; start_sweep_mop would select a mode.
         try:
             return self._action(2, 16 if room_ids is not None else 1,
-                                [room_param] if room_param is not None else [], before_write)
+                                room_inputs, before_write)
         except Exception:
             # Settings already changed; even a revoked guard is not a no-effect rejection.
             raise CleaningError('settings_applied_start_not_confirmed') from None

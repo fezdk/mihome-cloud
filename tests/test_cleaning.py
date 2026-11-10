@@ -44,7 +44,7 @@ def test_modes_readback_before_one_start(client,mode,raw):
     c.start({'mode':mode,'passes':'twice'},[3,6])
     assert cloud.values[(2,4)]==raw
     assert [r['method'] for r in cloud.calls]==['get_properties','set_properties','get_properties','action']
-    assert cloud.calls[-1]['params']=={'did':'2.16','siid':2,'aiid':16,'in':['3,6']}
+    assert cloud.calls[-1]['params']=={'did':'2.16','siid':2,'aiid':16,'in':[{'piid':15,'value':'3,6'}]}
 
 def test_whole_home_uses_generic_start(client):
     c,cloud=client;c.start({'mode':'vacuum_then_mop'})
@@ -87,12 +87,12 @@ def test_revoked_after_settings_reports_partial_effects(client):
 
 
 @pytest.mark.parametrize('rooms,expected', [([4], '4'), ([6,3], '6,3')])
-def test_x20_room_input_is_one_csv_string(client, rooms, expected):
+def test_x20_room_rpc_input_tags_spec_property_15_with_csv_string(client, rooms, expected):
     c, cloud = client
     c.start({'mode':'vacuum_mop'}, rooms)
     action = cloud.calls[-1]
     assert action['method'] == 'action'
-    assert action['params']['in'] == [expected]
+    assert action['params']['in'] == [{'piid':15,'value':expected}]
     assert len([call for call in cloud.calls if call['method']=='action']) == 1
 
 
@@ -102,8 +102,27 @@ def test_legacy_x20_rooms_use_same_wire_format():
     vacuum.rooms = Mock(return_value={})
     vacuum.run_action = Mock()
     vacuum.clean_rooms([4,6])
-    vacuum.run_action.assert_called_once_with('clean_rooms', ['4,6'])
+    vacuum.run_action.assert_called_once_with('clean_rooms', [{'piid':15,'value':'4,6'}])
     vacuum.run_action.reset_mock()
     with pytest.raises(CleaningError):
         vacuum.clean_rooms([])
     vacuum.run_action.assert_not_called()
+
+
+def test_legacy_room_payload_reaches_rpc_with_tagged_string():
+    # Exercise real profile resolution and cloud.action serialization, rather
+    # than accepting a high-level shorthand as if it were a device payload.
+    from mihome_cloud import MiHomeCloud, MiHomeVacuum
+    cloud = MiHomeCloud('', '', country='de')
+    cloud._rpc = Mock(return_value={'code':0, 'result':{'code':0}})
+    from mihome_cloud.profiles import load_profile
+    model = 'xiaomi.vacuum.d102gl'
+    vacuum = MiHomeVacuum(cloud, '1234567890', model, load_profile(model))
+    vacuum.rooms = Mock(return_value={})
+    vacuum.clean_rooms([4])
+    args, _ = cloud._rpc.call_args
+    assert args[0].endswith('/v2/home/rpc/1234567890')
+    assert args[1] == {'method':'action', 'params':{
+        'did':'2.16', 'siid':2, 'aiid':16,
+        'in':[{'piid':15, 'value':'4'}]}}
+    assert cloud._rpc.call_count == 1

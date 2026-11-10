@@ -196,6 +196,17 @@ An empty dict therefore does not prove the robot has no rooms. Use the raw list
 above for all reported IDs, or `vacuum.maps.get_snapshot().to_dict()["rooms"]`
 for X20 Pro geometry, names and display-label fallbacks.
 
+For X20 Pro room starts, use **0.4.2 or later**. The direct device RPC requires
+MIoT-tagged inputs: action 2/16 receives `[{"piid": 15, "value": "4,6"}]`.
+Both `clean_rooms()` and `cleaning.start()` encode this automatically. Earlier
+versions sent nested arrays (0.4.0) or an untagged CSV string (0.4.1), which can
+receive a successful acknowledgement without starting the robot. This wire
+format follows the [X20 Pro protocol investigation](https://github.com/AldenDana/ha-xiaomi-vacuum-x20pro/blob/master/docs/METHOD.md)
+and MIoT input property 2/15. An acknowledgement is still not proof of movement;
+check subsequent robot status. Never automatically retry an ambiguous start.
+The corrected tagged format has synthetic wire-contract coverage; physical
+execution on our test robot remains to be confirmed.
+
 `clean_rooms()` also accepts integer IDs from the current room configuration,
 for example `vacuum.clean_rooms([4])`. IDs belong to a floor: do not send IDs
 from another saved floor, and do not treat a display fallback such as `Room 4`

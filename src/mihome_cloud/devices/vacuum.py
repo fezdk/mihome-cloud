@@ -134,8 +134,8 @@ class MiHomeVacuum(MiHomeDevice, BatteryMixin, ConsumablesMixin,
         """
         ids = self.resolve_room_ids(room_names)
         if self.model == "xiaomi.vacuum.d102gl":
-            from mihome_cloud.cleaning import encode_room_ids
-            return self.run_action("clean_rooms", [encode_room_ids(ids)])
+            from mihome_cloud.cleaning import room_action_inputs
+            return self.run_action("clean_rooms", room_action_inputs(ids))
         return self.run_action("clean_rooms", [ids])
 
     # ── Pre-command safety check ──
